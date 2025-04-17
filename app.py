@@ -11,12 +11,15 @@ archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)
 # Preguntar número de días
 dias = st.text_input("⏰ ¿Cuántos días deseas calcular para VtaProm? (Escribe un número)")
 
+# ✅ Casilla corregida: Texto breve y directo
+mostrar_proveedor = st.checkbox("¿Mostrar Proveedor?", value=False)
+
 # Validar que sea un número entero positivo
 if not dias.strip().isdigit() or int(dias) <= 0:
     st.warning("⚠️ Por favor escribe un número válido de días (mayor que 0) para continuar.")
     st.stop()
 
-dias = int(dias)  # Convertir a número
+dias = int(dias)
 
 if archivo:
     try:
@@ -66,17 +69,25 @@ if archivo:
         tabla["Max"] = tabla[["VtaProm", "V30D"]].max(axis=1).round()
         tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).round()
 
-        # Eliminar columnas internas
-        tabla = tabla.drop(columns=["VtaDiaria", "Proveedor"])
+        # Eliminar columna VtaDiaria
+        tabla = tabla.drop(columns=["VtaDiaria"])
 
         # Filtrar productos a comprar
         tabla = tabla[tabla["Compra"] > 0].sort_values("Nombre")
 
-        # Reordenar columnas
-        columnas_finales = [
-            "Código", "Código EAN", "Nombre", "Stock",
-            "V365", "VtaProm", "V30D", "Max", "Compra"
-        ]
+        # Reordenar columnas según si incluye proveedor
+        if mostrar_proveedor:
+            columnas_finales = [
+                "Código", "Código EAN", "Nombre", "Proveedor", "Stock",
+                "V365", "VtaProm", "V30D", "Max", "Compra"
+            ]
+        else:
+            tabla = tabla.drop(columns=["Proveedor"])
+            columnas_finales = [
+                "Código", "Código EAN", "Nombre", "Stock",
+                "V365", "VtaProm", "V30D", "Max", "Compra"
+            ]
+        
         tabla = tabla[columnas_finales]
 
         st.success("✅ Archivo procesado correctamente")
