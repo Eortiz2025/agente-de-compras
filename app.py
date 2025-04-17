@@ -11,9 +11,9 @@ archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)
 # Preguntar número de días
 dias = st.text_input("⏰ ¿Cuántos días deseas calcular para VtaProm? (Escribe un número)")
 
-# Validar que sea un número
-if not dias.strip().isdigit():
-    st.warning("⚠️ Por favor escribe un número válido de días para continuar.")
+# Validar que sea un número entero positivo
+if not dias.strip().isdigit() or int(dias) <= 0:
+    st.warning("⚠️ Por favor escribe un número válido de días (mayor que 0) para continuar.")
     st.stop()
 
 dias = int(dias)  # Convertir a número
