@@ -8,7 +8,12 @@ st.title("💼 Agente de Compras")
 # Subida del archivo
 archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)", type=["xls"])
 
-dias = st.selectbox("⏰ ¿Cuántos días deseas calcular para VtaProm?", [15, 30, 60])
+dias = st.selectbox("⏰ ¿Cuántos días deseas calcular para VtaProm?", ["Selecciona...", 15, 30, 60])
+
+# Validar selección de días
+if dias == "Selecciona...":
+    st.warning("⚠️ Por favor selecciona cuántos días deseas calcular para continuar.")
+    st.stop()
 
 if archivo:
     try:
