@@ -11,9 +11,6 @@ archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)
 # Preguntar número de días
 dias = st.text_input("⏰ ¿Cuántos días deseas calcular para VtaProm? (Escribe un número)")
 
-# ✅ Casilla corregida: Texto breve y directo
-mostrar_proveedor = st.checkbox("¿Mostrar Proveedor?", value=False)
-
 # Validar que sea un número entero positivo
 if not dias.strip().isdigit() or int(dias) <= 0:
     st.warning("⚠️ Por favor escribe un número válido de días (mayor que 0) para continuar.")
@@ -58,6 +55,14 @@ if archivo:
         tabla = tabla[tabla["Proveedor"].notna()]
         tabla = tabla[tabla["Proveedor"].astype(str).str.strip() != ""]
 
+        # 👉 Preguntar si desea calcular solo un proveedor
+        calcular_proveedor = st.checkbox("¿Deseas calcular sólo un proveedor?", value=False)
+
+        if calcular_proveedor:
+            lista_proveedores = tabla["Proveedor"].dropna().unique()
+            proveedor_seleccionado = st.selectbox("Selecciona el proveedor a calcular:", sorted(lista_proveedores))
+            tabla = tabla[tabla["Proveedor"] == proveedor_seleccionado]
+
         # Convertir columnas numéricas
         tabla["V365"] = pd.to_numeric(tabla["V365"], errors="coerce").round()
         tabla["V30D"] = pd.to_numeric(tabla["V30D"], errors="coerce").round()
@@ -74,6 +79,9 @@ if archivo:
 
         # Filtrar productos a comprar
         tabla = tabla[tabla["Compra"] > 0].sort_values("Nombre")
+
+        # Preguntar si mostrar columna proveedor
+        mostrar_proveedor = st.checkbox("¿Mostrar Proveedor?", value=False)
 
         # Reordenar columnas según si incluye proveedor
         if mostrar_proveedor:
