@@ -3,7 +3,7 @@ import streamlit as st
 import io  # Para manejar archivos en memoria
 
 st.set_page_config(page_title="Agente de Compras", page_icon="💼")
-st.title("💼 Agente de Compras - KAROLO")
+st.title("💼 Agente de Compras")
 
 # Subida del archivo
 archivo = st.file_uploader("🗂️ Sube el archivo exportado desde tu CRM (.xls)", type=["xls"])
