@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+import io  # Para manejar archivos en memoria
 
 st.set_page_config(page_title="Agente de Compras", page_icon="💼")
 st.title("💼 Agente de Compras - KAROLO")
@@ -66,10 +67,16 @@ if archivo:
         st.success("✅ Archivo procesado correctamente")
         st.dataframe(tabla)
 
+        # Crear archivo Excel en memoria
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            tabla.to_excel(writer, index=False)
+        processed_data = output.getvalue()
+
         # Botón de descarga
         st.download_button(
             label="📄 Descargar Excel",
-            data=tabla.to_excel(index=False, engine='openpyxl'),
+            data=processed_data,
             file_name="Compra del día.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
