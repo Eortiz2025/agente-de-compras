@@ -57,20 +57,24 @@ if archivo:
         tabla["V30D"] = pd.to_numeric(tabla["V30D"], errors="coerce").round()
         tabla["Stock"] = pd.to_numeric(tabla["Stock"], errors="coerce").round()
 
-        # Calcular VtaProm usando VtaDiaria
+        # Calcular VtaProm y demás
         tabla["VtaDiaria"] = (tabla["V365"] / 342).round(2)
         tabla["VtaProm"] = (tabla["VtaDiaria"] * dias).round()
         tabla["Max"] = tabla[["VtaProm", "V30D"]].max(axis=1).round()
         tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).round()
 
         # Eliminar VtaDiaria antes de mostrar/exportar
-        tabla = tabla.drop(columns=["VtaDiaria"])
+        tabla = tabla.drop(columns=["VtaDiaria", "Proveedor"])
 
         # Filtrar productos a comprar
         tabla = tabla[tabla["Compra"] > 0].sort_values("Nombre")
 
-        # Eliminar columna proveedor antes de exportar
-        tabla = tabla.drop(columns=["Proveedor"])
+        # Reordenar columnas
+        columnas_finales = [
+            "Código", "Código EAN", "Nombre", "Stock",
+            "V365", "VtaProm", "V30D", "Max", "Compra"
+        ]
+        tabla = tabla[columnas_finales]
 
         st.success("✅ Archivo procesado correctamente")
         st.dataframe(tabla)
