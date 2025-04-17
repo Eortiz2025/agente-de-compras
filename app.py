@@ -6,7 +6,7 @@ st.set_page_config(page_title="Agente de Compras", page_icon="💼")
 st.title("💼 Agente de Compras")
 
 # Subida del archivo
-archivo = st.file_uploader("🗂️ Sube el archivo exportado desde tu CRM (.xls)", type=["xls"])
+archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)", type=["xls"])
 
 dias = st.selectbox("⏰ ¿Cuántos días deseas calcular para VtaProm?", [15, 30, 60])
 
