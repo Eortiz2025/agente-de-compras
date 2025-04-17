@@ -8,12 +8,15 @@ st.title("💼 Agente de Compras")
 # Subida del archivo
 archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)", type=["xls"])
 
-dias = st.selectbox("⏰ ¿Cuántos días deseas calcular para VtaProm?", ["Selecciona...", 15, 30, 60])
+# Preguntar número de días
+dias = st.text_input("⏰ ¿Cuántos días deseas calcular para VtaProm? (Escribe un número)")
 
-# Validar selección de días
-if dias == "Selecciona...":
-    st.warning("⚠️ Por favor selecciona cuántos días deseas calcular para continuar.")
+# Validar que sea un número
+if not dias.strip().isdigit():
+    st.warning("⚠️ Por favor escribe un número válido de días para continuar.")
     st.stop()
+
+dias = int(dias)  # Convertir a número
 
 if archivo:
     try:
@@ -83,7 +86,6 @@ if archivo:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             tabla.to_excel(writer, index=False, sheet_name='Compra del día')
-            # Congelar primera fila
             workbook = writer.book
             worksheet = writer.sheets['Compra del día']
             worksheet.freeze_panes = worksheet['A2']
