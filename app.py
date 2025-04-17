@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-import io  # Para manejar archivos en memoria
+import io
 
 st.set_page_config(page_title="Agente de Compras", page_icon="💼")
 st.title("💼 Agente de Compras")
@@ -63,7 +63,7 @@ if archivo:
         tabla["Max"] = tabla[["VtaProm", "V30D"]].max(axis=1).round()
         tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).round()
 
-        # Eliminar VtaDiaria antes de mostrar/exportar
+        # Eliminar columnas internas
         tabla = tabla.drop(columns=["VtaDiaria", "Proveedor"])
 
         # Filtrar productos a comprar
@@ -79,10 +79,15 @@ if archivo:
         st.success("✅ Archivo procesado correctamente")
         st.dataframe(tabla)
 
-        # Crear archivo Excel en memoria
+        # Crear archivo Excel en memoria y congelar primera fila
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            tabla.to_excel(writer, index=False)
+            tabla.to_excel(writer, index=False, sheet_name='Compra del día')
+            # Congelar primera fila
+            workbook = writer.book
+            worksheet = writer.sheets['Compra del día']
+            worksheet.freeze_panes = worksheet['A2']
+
         processed_data = output.getvalue()
 
         # Botón de descarga
