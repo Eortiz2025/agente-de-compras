@@ -119,8 +119,8 @@ if archivo:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # --- SOLO UNA PESTAÑA: Top 10 por volumen ---
-        st.subheader("🔥 Top 10 Productos donde V30D supera a VtaProm (por unidades)")
+        # --- SOLO UNA SECCIÓN: Top 10 solo con V365, VtaProm, V30D ---
+        st.subheader("🔥 Top 10 Productos donde V30D supera a VtaProm")
 
         productos_calientes = tabla[tabla["V30D"] > tabla["VtaProm"]]
 
@@ -128,8 +128,9 @@ if archivo:
             productos_calientes["Diferencia"] = productos_calientes["V30D"] - productos_calientes["VtaProm"]
             top_productos = productos_calientes.sort_values("Diferencia", ascending=False).head(10)
 
-            columnas_a_mostrar = ["Código", "Código EAN", "Nombre", "Stock", "V365", "VtaProm", "V30D", "Max", "Compra", "Diferencia"]
+            columnas_a_mostrar = ["V365", "VtaProm", "V30D"]
             st.dataframe(top_productos[columnas_a_mostrar])
+
         else:
             st.info("✅ No hay productos con V30D mayores que VtaProm en este momento.")
 
