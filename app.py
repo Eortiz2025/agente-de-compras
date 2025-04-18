@@ -1,6 +1,8 @@
 import pandas as pd
 import streamlit as st
 import io
+import matplotlib.pyplot as plt
+import numpy as np
 
 st.set_page_config(page_title="Agente de Compras", page_icon="💼")
 st.title("💼 Agente de Compras")
@@ -95,7 +97,7 @@ if archivo:
                 "Código", "Código EAN", "Nombre", "Stock",
                 "V365", "VtaProm", "V30D", "Max", "Compra"
             ]
-        
+
         tabla = tabla[columnas_finales]
 
         st.success("✅ Archivo procesado correctamente")
@@ -118,6 +120,85 @@ if archivo:
             file_name="Compra del día.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
+        # --- GRAFICAS EN PESTAÑAS ---
+        tab1, tab2 = st.tabs(["🔥 Top por Volumen", "📈 Top por Crecimiento %"])
+
+        with tab1:
+            productos_calientes = tabla[tabla["V30D"] > tabla["VtaProm"]]
+
+            if not productos_calientes.empty:
+                st.subheader("🔥 Productos con ventas de 30 días superiores al promedio")
+                productos_calientes["Diferencia"] = productos_calientes["V30D"] - productos_calientes["VtaProm"]
+                top_productos = productos_calientes.sort_values("Diferencia", ascending=False).head(10)
+
+                nombres = top_productos["Nombre"]
+                vtaprom = top_productos["VtaProm"]
+                v30d = top_productos["V30D"]
+
+                x = np.arange(len(nombres))
+                width = 0.35
+
+                fig, ax = plt.subplots(figsize=(14, 7))
+                barras1 = ax.bar(x - width/2, vtaprom, width, label='VtaProm', color='#1f77b4')
+                barras2 = ax.bar(x + width/2, v30d, width, label='V30D', color='#2ca02c')
+
+                for barra in barras1 + barras2:
+                    height = barra.get_height()
+                    ax.annotate('{}'.format(int(height)),
+                                xy=(barra.get_x() + barra.get_width() / 2, height),
+                                xytext=(0, 3),
+                                textcoords="offset points",
+                                ha='center', va='bottom', fontsize=8)
+
+                ax.set_ylabel('Unidades', fontsize=12)
+                ax.set_xlabel('Productos', fontsize=12)
+                ax.set_title('🔥 Comparativo VtaProm vs V30D (Top 10 donde V30D > VtaProm)', fontsize=16)
+                ax.set_xticks(x)
+                ax.set_xticklabels(nombres, rotation=45, ha='right', fontsize=10)
+                ax.legend(fontsize=10)
+                ax.grid(True, axis='y', linestyle='--', alpha=0.7)
+
+                st.pyplot(fig)
+            else:
+                st.info("✅ No hay productos con V30D mayores que VtaProm en este momento.")
+
+        with tab2:
+            productos_crecimiento = tabla[tabla["V30D"] > tabla["VtaProm"]]
+
+            if not productos_crecimiento.empty:
+                st.subheader("📈 Top 10 Productos con mayor crecimiento porcentual en V30D respecto a VtaProm")
+                productos_crecimiento["Crecimiento %"] = ((productos_crecimiento["V30D"] - productos_crecimiento["VtaProm"]) / productos_crecimiento["VtaProm"]) * 100
+                productos_crecimiento["Crecimiento %"] = productos_crecimiento["Crecimiento %"].replace([np.inf, -np.inf], np.nan).fillna(0)
+
+                top_crecimiento = productos_crecimiento.sort_values("Crecimiento %", ascending=False).head(10)
+
+                nombres = top_crecimiento["Nombre"]
+                crecimiento = top_crecimiento["Crecimiento %"]
+
+                x = np.arange(len(nombres))
+
+                fig, ax = plt.subplots(figsize=(14, 7))
+                barras = ax.bar(x, crecimiento, color='#ff7f0e')
+
+                for barra in barras:
+                    height = barra.get_height()
+                    ax.annotate(f'{height:.1f}%', 
+                                xy=(barra.get_x() + barra.get_width() / 2, height),
+                                xytext=(0, 3),
+                                textcoords="offset points",
+                                ha='center', va='bottom', fontsize=8)
+
+                ax.set_ylabel('Crecimiento %', fontsize=12)
+                ax.set_xlabel('Productos', fontsize=12)
+                ax.set_title('📈 Crecimiento porcentual V30D vs VtaProm (Top 10)', fontsize=16)
+                ax.set_xticks(x)
+                ax.set_xticklabels(nombres, rotation=45, ha='right', fontsize=10)
+                ax.grid(True, axis='y', linestyle='--', alpha=0.7)
+
+                st.pyplot(fig)
+            else:
+                st.info("✅ No hay productos con V30D mayores que VtaProm en este momento.")
 
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo: {e}")
