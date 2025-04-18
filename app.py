@@ -120,16 +120,16 @@ if archivo:
         )
 
         # --- SOLO UNA SECCIÓN: Top 10 mostrando Código, Nombre, V365, VtaProm, V30D ---
-        st.subheader("🔥 Top 10 Productos donde V30D supera a VtaProm")
+        st.subheader("🔥 Top 10 Productos donde V30D supera a VtaProm (Orden alfabético)")
 
         productos_calientes = tabla[tabla["V30D"] > tabla["VtaProm"]]
 
         if not productos_calientes.empty:
-            productos_calientes["Diferencia"] = productos_calientes["V30D"] - productos_calientes["VtaProm"]
-            top_productos = productos_calientes.sort_values("Diferencia", ascending=False).head(10)
+            # Ordenar primero por Nombre
+            productos_calientes = productos_calientes.sort_values("Nombre", ascending=True)
 
-            # Ahora ordenar alfabéticamente por Nombre
-            top_productos = top_productos.sort_values("Nombre", ascending=True)
+            # Tomar los primeros 10 ordenados alfabéticamente
+            top_productos = productos_calientes.head(10)
 
             columnas_a_mostrar = ["Código", "Nombre", "V365", "VtaProm", "V30D"]
             st.dataframe(top_productos[columnas_a_mostrar])
