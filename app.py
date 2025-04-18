@@ -128,6 +128,9 @@ if archivo:
             productos_calientes["Diferencia"] = productos_calientes["V30D"] - productos_calientes["VtaProm"]
             top_productos = productos_calientes.sort_values("Diferencia", ascending=False).head(10)
 
+            # Ahora ordenar alfabéticamente por Nombre
+            top_productos = top_productos.sort_values("Nombre", ascending=True)
+
             columnas_a_mostrar = ["Código", "Nombre", "V365", "VtaProm", "V30D"]
             st.dataframe(top_productos[columnas_a_mostrar])
 
