@@ -119,40 +119,19 @@ if archivo:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # --- PESTAÑAS DE TOP 10 ---
-        tab1, tab2 = st.tabs(["🔥 Top por Volumen", "📈 Top por Crecimiento %"])
+        # --- SOLO UNA PESTAÑA: Top 10 por volumen ---
+        st.subheader("🔥 Top 10 Productos donde V30D supera a VtaProm (por unidades)")
 
-        with tab1:
-            productos_calientes = tabla[tabla["V30D"] > tabla["VtaProm"]]
+        productos_calientes = tabla[tabla["V30D"] > tabla["VtaProm"]]
 
-            if not productos_calientes.empty:
-                st.subheader("🔥 Top 10 Productos donde V30D supera a VtaProm (por unidades)")
+        if not productos_calientes.empty:
+            productos_calientes["Diferencia"] = productos_calientes["V30D"] - productos_calientes["VtaProm"]
+            top_productos = productos_calientes.sort_values("Diferencia", ascending=False).head(10)
 
-                productos_calientes["Diferencia"] = productos_calientes["V30D"] - productos_calientes["VtaProm"]
-                top_productos = productos_calientes.sort_values("Diferencia", ascending=False).head(10)
-
-                columnas_a_mostrar = ["Código", "Código EAN", "Nombre", "Stock", "V365", "VtaProm", "V30D", "Max", "Compra", "Diferencia"]
-                st.dataframe(top_productos[columnas_a_mostrar])
-
-            else:
-                st.info("✅ No hay productos con V30D mayores que VtaProm en este momento.")
-
-        with tab2:
-            productos_crecimiento = tabla[tabla["V30D"] > tabla["VtaProm"]]
-
-            if not productos_crecimiento.empty:
-                st.subheader("📈 Top 10 Productos con mayor crecimiento porcentual en V30D respecto a VtaProm")
-
-                productos_crecimiento["Crecimiento %"] = ((productos_crecimiento["V30D"] - productos_crecimiento["VtaProm"]) / productos_crecimiento["VtaProm"]) * 100
-                productos_crecimiento["Crecimiento %"] = productos_crecimiento["Crecimiento %"].replace([float('inf'), -float('inf')], float('nan')).fillna(0)
-
-                top_crecimiento = productos_crecimiento.sort_values("Crecimiento %", ascending=False).head(10)
-
-                columnas_a_mostrar = ["Código", "Código EAN", "Nombre", "Stock", "V365", "VtaProm", "V30D", "Max", "Compra", "Crecimiento %"]
-                st.dataframe(top_crecimiento[columnas_a_mostrar])
-
-            else:
-                st.info("✅ No hay productos con V30D mayores que VtaProm en este momento.")
+            columnas_a_mostrar = ["Código", "Código EAN", "Nombre", "Stock", "V365", "VtaProm", "V30D", "Max", "Compra", "Diferencia"]
+            st.dataframe(top_productos[columnas_a_mostrar])
+        else:
+            st.info("✅ No hay productos con V30D mayores que VtaProm en este momento.")
 
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo: {e}")
