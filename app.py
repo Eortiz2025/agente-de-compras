@@ -20,8 +20,10 @@ dias = int(dias)
 
 if archivo:
     try:
-        # Leer archivo
-        tabla = pd.read_html(archivo, skiprows=3)[0].iloc[:, 1:]
+        # ✅ CAMBIO: lectura corregida para no perder productos como "1KG"
+        tabla = pd.read_html(archivo, header=3)[0]
+        if tabla.columns[0] in ("", "Unnamed: 0", "No", "Moneda"):
+            tabla = tabla.iloc[:, 1:]
 
         # Encabezados esperados
         columnas_deseadas = [
