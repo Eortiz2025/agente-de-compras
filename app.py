@@ -70,11 +70,15 @@ if archivo:
         tabla["V30D"] = pd.to_numeric(tabla["V30D"], errors="coerce").round()
         tabla["Stock"] = pd.to_numeric(tabla["Stock"], errors="coerce").round()
 
-        # Calcular VtaProm y demás
+        # ✅ NUEVO ALGORITMO DE COMPRA (reemplaza lógica anterior)
         tabla["VtaDiaria"] = (tabla["V365"] / 342).round(2)
         tabla["VtaProm"] = (tabla["VtaDiaria"] * dias).round()
-        tabla["Max"] = tabla[["VtaProm", "V30D"]].max(axis=1).round()
-        tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).round()
+
+        max_intermedio = (0.6 * tabla["V30D"] + 0.4 * tabla["VtaProm"]).round()
+        max_intermedio = max_intermedio.clip(lower=tabla["V30D"])
+        tabla["Max"] = max_intermedio.clip(upper=(tabla["V30D"] * 1.5)).round()
+
+        tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).clip(lower=0).round()
 
         # Eliminar columna VtaDiaria
         tabla = tabla.drop(columns=["VtaDiaria"])
