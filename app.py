@@ -70,14 +70,21 @@ if archivo:
         tabla["V30D"] = pd.to_numeric(tabla["V30D"], errors="coerce").round()
         tabla["Stock"] = pd.to_numeric(tabla["Stock"], errors="coerce").round()
 
-        # ✅ NUEVO ALGORITMO DE COMPRA (reemplaza lógica anterior)
+        # ✅ CÁLCULO ACTUALIZADO
         tabla["VtaDiaria"] = (tabla["V365"] / 342).round(2)
         tabla["VtaProm"] = (tabla["VtaDiaria"] * dias).round()
 
-        max_intermedio = (0.6 * tabla["V30D"] + 0.4 * tabla["VtaProm"]).round()
-        max_intermedio = max_intermedio.clip(lower=tabla["V30D"])
-        tabla["Max"] = max_intermedio.clip(upper=(tabla["V30D"] * 1.5)).round()
+        # Si V30D = 0, Max = 0.5 * VtaProm; si no, usar lógica avanzada
+        max_calculado = []
+        for i, row in tabla.iterrows():
+            if row["V30D"] == 0:
+                max_val = 0.5 * row["VtaProm"]
+            else:
+                intermedio = max(0.6 * row["V30D"] + 0.4 * row["VtaProm"], row["V30D"])
+                max_val = min(intermedio, row["V30D"] * 1.5)
+            max_calculado.append(round(max_val))
 
+        tabla["Max"] = max_calculado
         tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).clip(lower=0).round()
 
         # Eliminar columna VtaDiaria
@@ -131,15 +138,10 @@ if archivo:
         productos_calientes = tabla[tabla["V30D"] > tabla["VtaProm"]]
 
         if not productos_calientes.empty:
-            # Ordenar primero por Nombre
             productos_calientes = productos_calientes.sort_values("Nombre", ascending=True)
-
-            # Tomar los primeros 10 ordenados alfabéticamente
             top_productos = productos_calientes.head(10)
-
             columnas_a_mostrar = ["Código", "Nombre", "V365", "VtaProm", "V30D"]
             st.dataframe(top_productos[columnas_a_mostrar])
-
         else:
             st.info("✅ No hay productos con V30D mayores que VtaProm en este momento.")
 
