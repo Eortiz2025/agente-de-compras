@@ -2,30 +2,19 @@ import pandas as pd
 import streamlit as st
 import io
 
-st.set_page_config(page_title="Agente de Compras", page_icon="💼")
-st.title("💼 Agente de Compras")
+st.set_page_config(page_title="Agente Temporada", page_icon="💼")
+st.title("💼 Agente Temporada")
 
 # Subida del archivo
 archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)", type=["xls"])
 
-# Preguntar número de días
-dias = st.text_input("⏰ ¿Cuántos días deseas calcular para VtaProm? (Escribe un número)")
-
-# Validar que sea un número entero positivo
-if not dias.strip().isdigit() or int(dias) <= 0:
-    st.warning("⚠️ Por favor escribe un número válido de días (mayor que 0) para continuar.")
-    st.stop()
-
-dias = int(dias)
-
 if archivo:
     try:
-        # ✅ Lectura robusta
+        # Leer archivo
         tabla = pd.read_html(archivo, header=3)[0]
         if tabla.columns[0] in ("", "Unnamed: 0", "No", "Moneda"):
             tabla = tabla.iloc[:, 1:]
 
-        # Encabezados esperados
         columnas_deseadas = [
             "Código", "Código EAN", "Nombre",
             "Stock (total)", "Stock (apartado)", "Stock (disponible)",
@@ -49,15 +38,15 @@ if archivo:
         # Renombrar columnas
         tabla = tabla.rename(columns={
             "Stock (total)": "Stock",
-            "Cantidad vendida": "V365",
-            "Cantidad vendida (2)": "V30D"
+            "Cantidad vendida": "V30D Hoy",
+            "Cantidad vendida (2)": "V30D 24"
         })
 
         # Filtrar productos sin proveedor
         tabla = tabla[tabla["Proveedor"].notna()]
         tabla = tabla[tabla["Proveedor"].astype(str).str.strip() != ""]
 
-        # 👉 Calcular solo un proveedor si se desea
+        # Filtrar por proveedor (opcional)
         calcular_proveedor = st.checkbox("¿Deseas calcular sólo un proveedor?", value=False)
 
         if calcular_proveedor:
@@ -65,46 +54,31 @@ if archivo:
             proveedor_seleccionado = st.selectbox("Selecciona el proveedor a calcular:", sorted(lista_proveedores))
             tabla = tabla[tabla["Proveedor"] == proveedor_seleccionado]
 
-        # Convertir y limpiar columnas numéricas
-        tabla["V365"] = pd.to_numeric(tabla["V365"], errors="coerce").fillna(0).round()
-        tabla["V30D"] = pd.to_numeric(tabla["V30D"], errors="coerce").fillna(0).round()
+        # Convertir a numérico
+        tabla["V30D Hoy"] = pd.to_numeric(tabla["V30D Hoy"], errors="coerce").fillna(0).round()
+        tabla["V30D 24"] = pd.to_numeric(tabla["V30D 24"], errors="coerce").fillna(0).round()
         tabla["Stock"] = pd.to_numeric(tabla["Stock"], errors="coerce").fillna(0).round()
 
-        # ✅ Algoritmo actualizado
-        tabla["VtaDiaria"] = (tabla["V365"] / 342).round(2)
-        tabla["VtaProm"] = (tabla["VtaDiaria"] * dias).round()
-
-        max_calculado = []
-        for i, row in tabla.iterrows():
-            if row["V30D"] == 0:
-                max_val = 0.5 * row["VtaProm"]
-            else:
-                intermedio = max(0.6 * row["V30D"] + 0.4 * row["VtaProm"], row["V30D"])
-                max_val = min(intermedio, row["V30D"] * 1.5)
-            max_calculado.append(round(max_val))
-
-        tabla["Max"] = max_calculado
+        # Calcular Max como el mayor de los dos valores
+        tabla["Max"] = tabla[["V30D Hoy", "V30D 24"]].max(axis=1)
         tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).clip(lower=0).round()
 
-        # Eliminar columna temporal
-        tabla = tabla.drop(columns=["VtaDiaria"])
-
-        # Filtrar productos a comprar
+        # Filtrar productos con compra
         tabla = tabla[tabla["Compra"] > 0].sort_values("Nombre")
 
-        # Mostrar proveedor si se elige
+        # Mostrar proveedor (opcional)
         mostrar_proveedor = st.checkbox("¿Mostrar Proveedor?", value=False)
 
         if mostrar_proveedor:
             columnas_finales = [
                 "Código", "Código EAN", "Nombre", "Proveedor", "Stock",
-                "V365", "VtaProm", "V30D", "Max", "Compra"
+                "V30D Hoy", "V30D 24", "Max", "Compra"
             ]
         else:
             tabla = tabla.drop(columns=["Proveedor"])
             columnas_finales = [
                 "Código", "Código EAN", "Nombre", "Stock",
-                "V365", "VtaProm", "V30D", "Max", "Compra"
+                "V30D Hoy", "V30D 24", "Max", "Compra"
             ]
 
         tabla = tabla[columnas_finales]
@@ -116,7 +90,6 @@ if archivo:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             tabla.to_excel(writer, index=False, sheet_name='Compra del día')
-            workbook = writer.book
             worksheet = writer.sheets['Compra del día']
             worksheet.freeze_panes = worksheet['A2']
 
@@ -129,18 +102,18 @@ if archivo:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # 🔥 Productos donde V30D supera VtaProm
-        st.subheader("🔥 Top 10 Productos donde V30D supera a VtaProm (Orden alfabético)")
+        # Top productos donde V30D 24 > V30D Hoy
+        st.subheader("🔥 Top 10 productos donde V30D 24 supera V30D Hoy")
 
-        productos_calientes = tabla[tabla["V30D"] > tabla["VtaProm"]]
+        productos_calientes = tabla[tabla["V30D 24"] > tabla["V30D Hoy"]]
 
         if not productos_calientes.empty:
             productos_calientes = productos_calientes.sort_values("Nombre", ascending=True)
             top_productos = productos_calientes.head(10)
-            columnas_a_mostrar = ["Código", "Nombre", "V365", "VtaProm", "V30D"]
+            columnas_a_mostrar = ["Código", "Nombre", "V30D Hoy", "V30D 24"]
             st.dataframe(top_productos[columnas_a_mostrar])
         else:
-            st.info("✅ No hay productos con V30D mayores que VtaProm en este momento.")
+            st.info("✅ No hay productos donde V30D del año pasado supere al actual.")
 
     except Exception as e:
         st.error(f"❌ Error al procesar el archivo: {e}")
