@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 import io
 
-st.set_page_config(page_title="Agente de Temporada", page_icon="💼")
+st.set_page_config(page_title="Agente Temporada", page_icon="💼")
 st.title("💼 Agente Temporada")
 
 archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)", type=["xls"])
