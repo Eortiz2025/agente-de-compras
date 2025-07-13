@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import streamlit as st
 import io
 
@@ -29,7 +30,7 @@ if archivo:
         tabla = tabla.drop(columns=[
             "Ventas netas totales ($)", "Stock (apartado)", "Stock (disponible)",
             "Ventas netas totales ($) (2)"
-        ])
+        ], errors="ignore")
 
         tabla = tabla.rename(columns={
             "Stock (total)": "Stock",
@@ -52,7 +53,9 @@ if archivo:
         tabla["Stock"] = pd.to_numeric(tabla["Stock"], errors="coerce").fillna(0).round()
 
         tabla["Max"] = tabla[["V30D 25", "V30D 24"]].max(axis=1)
-        tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).clip(lower=0).round()
+
+        # Redondear la compra hacia arriba al múltiplo de 5
+        tabla["Compra"] = np.ceil((tabla["Max"] - tabla["Stock"]).clip(lower=0) / 5) * 5
 
         tabla = tabla[tabla["Compra"] > 0].sort_values("Nombre")
 
