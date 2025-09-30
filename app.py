@@ -95,12 +95,12 @@ try:
     compra_raw = (tabla["Max"] - tabla["Stock"]).clip(lower=0)
     tabla["Compra"] = compra_raw.apply(lambda x: int(math.ceil(x/5.0)*5) if x > 0 else 0)
 
-    # Salida: Compra inmediatamente después de Nombre
-    cols = ["Código", "Nombre", "Compra", "Stock", "V365", "VtaProm", "V30D", "Max"]
+    # Salida: Compra y luego Max
+    cols = ["Código", "Nombre", "Compra", "Max", "Stock", "V365", "VtaProm", "V30D"]
     if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
     if mostrar_proveedor:
-        cols.insert(3, "Proveedor")  # se muestra sólo si marcas la casilla
+        cols.insert(3, "Proveedor")
 
     final = (tabla[tabla["Compra"] > 0]
              .sort_values("Nombre", na_position="last"))[cols]
