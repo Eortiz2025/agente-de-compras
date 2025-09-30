@@ -7,7 +7,7 @@ import math
 
 st.set_page_config(page_title="Agente de Compras", page_icon="💼", layout="wide")
 st.title("💼 Agente de Compras")
-st.caption("Divisor fijo para V365: **342** (días hábiles).")
+st.caption("Divisor fijo para V365: **342** (días hábiles). Días fijos: **30**.")
 
 # ------------------ Utilidades ------------------
 def _to_num(s):
@@ -99,8 +99,8 @@ try:
     compra_raw = (tabla["Max"] - tabla["Stock"]).clip(lower=0)
     tabla["Compra"] = compra_raw.apply(lambda x: int(math.ceil(x/5.0)*5) if x > 0 else 0)
 
-    # Salida
-    cols = ["Código", "Nombre", "Stock", "V365", "VtaProm", "V30D", "Max", "Compra"]
+    # Salida: Compra inmediatamente después de Nombre
+    cols = ["Código", "Nombre", "Compra", "Stock", "V365", "VtaProm", "V30D", "Max"]
     if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
     if mostrar_proveedor:
