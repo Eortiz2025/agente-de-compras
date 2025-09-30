@@ -6,6 +6,7 @@ import re
 
 st.set_page_config(page_title="Agente de Compras", page_icon="💼", layout="wide")
 st.title("💼 Agente de Compras")
+st.caption("Divisor fijo para V365: **342** (días hábiles).")
 
 # ------------------ Utilidades ------------------
 def _to_num(s):
@@ -48,18 +49,16 @@ colp = st.columns(3)
 with colp[0]:
     dias = st.number_input("⏰ Días para VtaProm", min_value=1, step=1, value=30, format="%d")
 with colp[1]:
-    divisor_v365 = st.selectbox("📅 Divisor para V365", options=[365, 360, 342], index=0,
-                                help="365 natural; 360 comercial; 342 hábiles.")
-with colp[2]:
     proveedor_unico = st.checkbox("Filtrar por proveedor específico", value=False)
+with colp[2]:
+    mostrar_proveedor = st.checkbox("Mostrar Proveedor en resultados", value=False)  # oculto por defecto
 
-colf = st.columns(3)
+# Filtros adicionales
+colf = st.columns(2)
 with colf[0]:
     solo_stock_cero = st.checkbox("Solo Stock = 0", value=False)
 with colf[1]:
     solo_con_ventas_365 = st.checkbox("Solo con ventas en 365 días (>0)", value=False)
-with colf[2]:
-    mostrar_proveedor = st.checkbox("Mostrar Proveedor", value=True)
 
 if not archivo:
     st.info("Sube el archivo para continuar.")
@@ -67,6 +66,7 @@ if not archivo:
 
 # ------------------ Proceso ------------------
 try:
+    divisor_v365 = 342  # FIJO (no se muestra opción)
     tabla = _read_erply_xls_like_html(archivo)
 
     # Filtros básicos
@@ -93,8 +93,9 @@ try:
 
     v30, vprom = tabla["V30D"], tabla["VtaProm"]
     intermedio = np.maximum(0.6 * v30 + 0.4 * vprom, v30)
-    max_calc   = np.where(v30.eq(0), 0.5 * vprom, np.minimum(intermedio, 1.5 * v30))
-    tabla["Max"]    = np.rint(max_calc).astype(int)
+    max_calc   = np.minimum(intermedio, 1.5 * v30)
+    tabla["Max"]    = np.where(v30.eq(0), 0.5 * vprom, max_calc)
+    tabla["Max"]    = np.rint(tabla["Max"]).astype(int)
     tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).clip(lower=0).astype(int)
 
     # Salida
@@ -102,7 +103,7 @@ try:
     if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
     if mostrar_proveedor:
-        cols.insert(3, "Proveedor")
+        cols.insert(3, "Proveedor")  # se muestra solo si marcas la casilla
 
     final = (tabla[tabla["Compra"] > 0]
              .sort_values("Nombre", na_position="last"))[cols]
