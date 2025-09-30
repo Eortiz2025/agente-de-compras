@@ -7,75 +7,41 @@ import re
 st.set_page_config(page_title="Agente de Compras", page_icon="💼", layout="wide")
 st.title("💼 Agente de Compras")
 
-# -------------- Utilidades --------------
+# ------------------ Utilidades ------------------
 def _to_num(s):
     return pd.to_numeric(s, errors="coerce").fillna(0)
 
-def _dedupe(cols):
-    seen = {}
-    out = []
-    for c in cols:
-        c = str(c).strip()
-        if c not in seen:
-            seen[c] = 0
-            out.append(c)
-        else:
-            seen[c] += 1
-            out.append(f"{c}.{seen[c]}")
-    return out
+def _detect_data_start(df):
+    """Primera fila donde col1 parece 'Código' (alfanumérico) y col3 es un nombre."""
+    def is_code(x):
+        s = str(x).strip()
+        return bool(re.match(r"^[A-Za-z0-9\-]+$", s)) and len(s) >= 3 and "codigo" not in s.lower()
+    for i in range(min(60, len(df))):
+        c1 = df.iloc[i, 1] if df.shape[1] > 1 else None
+        c3 = df.iloc[i, 3] if df.shape[1] > 3 else None
+        if is_code(c1) and isinstance(c3, str) and len(str(c3).strip()) > 2 and "nombre" not in str(c3).lower():
+            return i
+    return 0
 
-def _flatten_cols(mi_cols):
-    """Aplana MultiIndex tomando preferentemente el segundo nivel ('Código', 'Nombre', etc.)."""
-    flat = []
-    for lvl0, lvl1 in mi_cols:
-        c = (str(lvl1).strip() if lvl1 and "unnamed" not in str(lvl1).lower()
-             else str(lvl0).strip())
-        flat.append(c)
-    return _dedupe(flat)
+def _read_erply_xls_like_html(file_obj):
+    """Lee el .xls (HTML) y devuelve DataFrame con columnas estables por posición."""
+    file_obj.seek(0)
+    df0 = pd.read_html(file_obj, header=None)[0]
+    start = _detect_data_start(df0)
+    # Toma 12 columnas (estructura conocida del export Erply)
+    df = df0.iloc[start:, :12].copy()
+    df.columns = [
+        "No", "Código", "Código EAN", "Nombre",
+        "Stock (total)", "Stock (apartado)", "Stock (disponible)",
+        "Proveedor",
+        "V30D", "Ventas corto ($)",
+        "V365", "Ventas 365 ($)"
+    ]
+    # Limpia filas totalmente vacías
+    df = df.dropna(how="all")
+    return df.reset_index(drop=True)
 
-def _pick_sales_cols(mi_cols):
-    """
-    Regresa índices (posiciones) para V30D y V365 dentro del MultiIndex:
-    - Busca columnas cuyo segundo nivel sea 'Cantidad vendida'.
-    - Decide V30D por el rango más corto (p.ej. 08/09/2025–30/09/2025).
-    - Decide V365 por el rango anual (p.ej. 30/09/2024–30/09/2025).
-    """
-    # Construir lista [(idx, lvl0_text, lvl1_text)]
-    cand = []
-    for i, (lvl0, lvl1) in enumerate(mi_cols):
-        if str(lvl1).strip().lower() == "cantidad vendida":
-            cand.append((i, str(lvl0), str(lvl1)))
-
-    if not cand:
-        return None, None
-
-    # Heurística: si el lvl0 contiene un rango con 2024–2025 => V365
-    # y si contiene solo fechas de 2025 y corta => V30D
-    def _is_annual(s):
-        s = s.replace(" ", "")
-        return ("2024" in s and "2025" in s) or "365" in s
-
-    v365_idx = None
-    v30d_idx = None
-    for i, lvl0, _ in cand:
-        if _is_annual(lvl0):
-            v365_idx = i
-
-    # El V30D: el otro "Cantidad vendida" que no sea el anual
-    for i, lvl0, _ in cand:
-        if i != v365_idx:
-            v30d_idx = i
-            break
-
-    # Fallback: si no detectó anual, toma el primero como V30D y segundo como V365
-    if v365_idx is None and len(cand) >= 2:
-        v30d_idx, v365_idx = cand[0][0], cand[1][0]
-    elif v365_idx is None and len(cand) == 1:
-        v30d_idx = cand[0][0]
-
-    return v30d_idx, v365_idx
-
-# -------------- Entradas --------------
+# ------------------ Entradas ------------------
 archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)", type=["xls"])
 
 colp = st.columns(3)
@@ -99,99 +65,46 @@ if not archivo:
     st.info("Sube el archivo para continuar.")
     st.stop()
 
+# ------------------ Proceso ------------------
 try:
-    # ⚠️ Este archivo trae MultiIndex en columnas (dos filas de encabezado).
-    archivo.seek(0)
-    df = pd.read_html(archivo, header=[3, 4])[0]  # fila 3 = nivel 0, fila 4 = nivel 1
+    tabla = _read_erply_xls_like_html(archivo)
 
-    if not isinstance(df.columns, pd.MultiIndex):
-        st.error("El archivo no trae dos filas de encabezado como se esperaba.")
-        st.stop()
+    # Filtros básicos
+    tabla = tabla[tabla["Proveedor"].astype(str).str.strip().ne("")]
 
-    # Identificar columnas de ventas (V30D/V365) por el nivel 0 (texto con rangos)
-    v30_idx, v365_idx = _pick_sales_cols(df.columns)
-    if v30_idx is None:
-        st.error("No se encontró columna de 'Cantidad vendida' (periodo corto).")
-        st.stop()
-    if v365_idx is None:
-        st.warning("No se detectó claro el periodo anual; se continuará solo con V30D.")
-
-    # Guardar nombres MultiIndex que usaremos antes de aplanar
-    mi = df.columns
-    col_codigo   = [i for i,(a,b) in enumerate(mi) if str(b).strip().lower()=="código"]
-    col_ean      = [i for i,(a,b) in enumerate(mi) if str(b).strip().lower()=="código ean"]
-    col_nombre   = [i for i,(a,b) in enumerate(mi) if str(b).strip().lower()=="nombre"]
-    col_stock    = [i for i,(a,b) in enumerate(mi) if str(b).strip().lower()=="stock (total)"]
-    col_prov     = [i for i,(a,b) in enumerate(mi) if str(b).strip().lower()=="proveedor"]
-
-    # Aplanar columnas a un solo nivel legible
-    flat_cols = _flatten_cols(df.columns)
-    df.columns = flat_cols
-
-    # Mapear a nombres estables
-    colmap = {}
-    # Campos base obligatorios
-    if col_codigo:   colmap[df.columns[col_codigo[0]]] = "Código"
-    if col_ean:      colmap[df.columns[col_ean[0]]]    = "Código EAN"
-    if col_nombre:   colmap[df.columns[col_nombre[0]]] = "Nombre"
-    if col_stock:    colmap[df.columns[col_stock[0]]]  = "Stock"
-    if col_prov:     colmap[df.columns[col_prov[0]]]   = "Proveedor"
-    # Ventas
-    colmap[df.columns[v30_idx]] = "V30D"
-    if v365_idx is not None:
-        colmap[df.columns[v365_idx]] = "V365"
-
-    df = df.rename(columns=colmap)
-
-    # Validaciones mínimas
-    requeridas = {"Código", "Nombre", "Stock", "Proveedor", "V30D"}
-    falt = [r for r in requeridas if r not in df.columns]
-    if falt:
-        st.error("❌ Columnas faltantes: " + ", ".join(falt) +
-                 "\nColumnas disponibles: " + ", ".join(df.columns))
-        st.stop()
-
-    # Limpiar proveedor y filtrar
-    df = df[df["Proveedor"].astype(str).str.strip().ne("")]
     if proveedor_unico:
-        provs = sorted(df["Proveedor"].dropna().astype(str).unique())
-        sel = st.selectbox("Proveedor:", provs)
-        df = df[df["Proveedor"] == sel]
+        provs = sorted(tabla["Proveedor"].dropna().astype(str).unique())
+        proveedor_sel = st.selectbox("Proveedor:", provs)
+        tabla = tabla[tabla["Proveedor"] == proveedor_sel]
 
     # Tipificación
-    df["Stock"] = _to_num(df["Stock"]).round()
-    df["V30D"]  = _to_num(df["V30D"]).round()
-    if "V365" in df.columns:
-        df["V365"] = _to_num(df["V365"]).round()
-    else:
-        df["V365"] = 0
+    tabla["Stock"] = _to_num(tabla["Stock (total)"]).round()
+    tabla["V30D"]  = _to_num(tabla["V30D"]).round()
+    tabla["V365"]  = _to_num(tabla["V365"]).round()
 
     if solo_stock_cero:
-        df = df[df["Stock"].eq(0)]
+        tabla = tabla[tabla["Stock"].eq(0)]
     if solo_con_ventas_365:
-        df = df[df["V365"] > 0]
+        tabla = tabla[tabla["V365"] > 0]
 
     # Cálculos
-    df["VtaDiaria"] = df["V365"] / divisor_v365
-    df["VtaProm"]   = np.rint(df["VtaDiaria"] * dias).astype(int)
+    tabla["VtaDiaria"] = tabla["V365"] / divisor_v365
+    tabla["VtaProm"]   = np.rint(tabla["VtaDiaria"] * dias).astype(int)
 
-    v30, vprom = df["V30D"], df["VtaProm"]
-    intermedio = np.maximum(0.6*v30 + 0.4*vprom, v30)
-    max_calc   = np.where(v30.eq(0), 0.5*vprom, np.minimum(intermedio, 1.5*v30))
-    df["Max"]    = np.rint(max_calc).astype(int)
-    df["Compra"] = (df["Max"] - df["Stock"]).clip(lower=0).astype(int)
+    v30, vprom = tabla["V30D"], tabla["VtaProm"]
+    intermedio = np.maximum(0.6 * v30 + 0.4 * vprom, v30)
+    max_calc   = np.where(v30.eq(0), 0.5 * vprom, np.minimum(intermedio, 1.5 * v30))
+    tabla["Max"]    = np.rint(max_calc).astype(int)
+    tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).clip(lower=0).astype(int)
 
     # Salida
     cols = ["Código", "Nombre", "Stock", "V365", "VtaProm", "V30D", "Max", "Compra"]
-    if "Código EAN" in df.columns:
+    if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
-    if "Proveedor" in df.columns:
-        if mostrar_proveedor and "Proveedor" not in cols:
-            cols.insert(3, "Proveedor")
-        elif not mostrar_proveedor and "Proveedor" in cols:
-            cols.remove("Proveedor")
+    if mostrar_proveedor:
+        cols.insert(3, "Proveedor")
 
-    final = (df[df["Compra"] > 0].copy()
+    final = (tabla[tabla["Compra"] > 0]
              .sort_values("Nombre", na_position="last"))[cols]
 
     st.success("✅ Archivo procesado correctamente")
