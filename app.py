@@ -3,6 +3,7 @@ import numpy as np
 import streamlit as st
 import io
 import re
+import math
 
 st.set_page_config(page_title="Agente de Compras", page_icon="💼", layout="wide")
 st.title("💼 Agente de Compras")
@@ -45,20 +46,15 @@ def _read_erply_xls_like_html(file_obj):
 # ------------------ Entradas ------------------
 archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)", type=["xls"])
 
-colp = st.columns(3)
-with colp[0]:
-    dias = st.number_input("⏰ Días para VtaProm", min_value=1, step=1, value=30, format="%d")
-with colp[1]:
-    proveedor_unico = st.checkbox("Filtrar por proveedor específico", value=False)
-with colp[2]:
-    mostrar_proveedor = st.checkbox("Mostrar Proveedor en resultados", value=False)  # oculto por defecto
-
-# Filtros adicionales
-colf = st.columns(2)
+colf = st.columns(3)
 with colf[0]:
-    solo_stock_cero = st.checkbox("Solo Stock = 0", value=False)
+    proveedor_unico = st.checkbox("Filtrar por proveedor específico", value=False)
 with colf[1]:
-    solo_con_ventas_365 = st.checkbox("Solo con ventas en 365 días (>0)", value=False)
+    mostrar_proveedor = st.checkbox("Mostrar Proveedor en resultados", value=False)  # oculto por defecto
+with colf[2]:
+    solo_stock_cero = st.checkbox("Solo Stock = 0", value=False)
+
+solo_con_ventas_365 = st.checkbox("Solo con ventas en 365 días (>0)", value=False)
 
 if not archivo:
     st.info("Sube el archivo para continuar.")
@@ -66,7 +62,9 @@ if not archivo:
 
 # ------------------ Proceso ------------------
 try:
-    divisor_v365 = 342  # FIJO (no se muestra opción)
+    divisor_v365 = 342  # FIJO
+    dias = 30           # FIJO
+
     tabla = _read_erply_xls_like_html(archivo)
 
     # Filtros básicos
@@ -96,7 +94,10 @@ try:
     max_calc   = np.minimum(intermedio, 1.5 * v30)
     tabla["Max"]    = np.where(v30.eq(0), 0.5 * vprom, max_calc)
     tabla["Max"]    = np.rint(tabla["Max"]).astype(int)
-    tabla["Compra"] = (tabla["Max"] - tabla["Stock"]).clip(lower=0).astype(int)
+
+    # Compra redondeada al múltiplo de 5 hacia arriba
+    compra_raw = (tabla["Max"] - tabla["Stock"]).clip(lower=0)
+    tabla["Compra"] = compra_raw.apply(lambda x: int(math.ceil(x/5.0)*5) if x > 0 else 0)
 
     # Salida
     cols = ["Código", "Nombre", "Stock", "V365", "VtaProm", "V30D", "Max", "Compra"]
