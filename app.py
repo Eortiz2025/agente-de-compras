@@ -83,9 +83,9 @@ try:
 
     # Cálculos
     tabla["VtaDiaria"] = tabla["V365"] / divisor_v365
-    tabla["VtaProm"]   = np.rint(tabla["VtaDiaria"] * dias).astype(int)
+    tabla["Prom365"]   = np.rint(tabla["VtaDiaria"] * dias).astype(int)  # renombrada
 
-    v30, vprom = tabla["V30D"], tabla["VtaProm"]
+    v30, vprom = tabla["V30D"], tabla["Prom365"]
     intermedio = np.maximum(0.6 * v30 + 0.4 * vprom, v30)
     max_calc   = np.minimum(intermedio, 1.5 * v30)
     tabla["Max"] = np.where(v30.eq(0), 0.5 * vprom, max_calc)
@@ -96,7 +96,7 @@ try:
     tabla["Compra"] = compra_raw.apply(lambda x: int(math.ceil(x/5.0)*5) if x > 0 else 0)
 
     # Salida: Compra y luego Max
-    cols = ["Código", "Nombre", "Compra", "Max", "Stock", "V365", "VtaProm", "V30D"]
+    cols = ["Código", "Nombre", "Compra", "Max", "Stock", "V365", "Prom365", "V30D"]
     if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
     if mostrar_proveedor:
@@ -110,7 +110,7 @@ try:
 
     # Descarga Excel (.xlsx)
     exp = final.copy()
-    for c in ["Stock", "V365", "VtaProm", "V30D", "Max", "Compra"]:
+    for c in ["Stock", "V365", "Prom365", "V30D", "Max", "Compra"]:
         if c in exp.columns:
             exp[c] = pd.to_numeric(exp[c], errors="coerce").fillna(0).astype(int)
 
@@ -127,12 +127,12 @@ try:
     )
 
     # Alerta
-    st.subheader("🔥 Top 10: V30D > VtaProm (orden alfabético)")
-    hot = exp[exp["V30D"] > exp["VtaProm"]].sort_values("Nombre").head(10)
+    st.subheader("🔥 Top 10: V30D > Prom365 (orden alfabético)")
+    hot = exp[exp["V30D"] > exp["Prom365"]].sort_values("Nombre").head(10)
     if hot.empty:
-        st.info("✅ No hay productos con V30D > VtaProm.")
+        st.info("✅ No hay productos con V30D > Prom365.")
     else:
-        st.dataframe(hot[["Código", "Nombre", "V365", "VtaProm", "V30D"]], use_container_width=True)
+        st.dataframe(hot[["Código", "Nombre", "V365", "Prom365", "V30D"]], use_container_width=True)
 
 except Exception as e:
     st.error(f"❌ Error al procesar el archivo: {e}")
