@@ -95,8 +95,8 @@ try:
     compra_raw = (tabla["Max"] - tabla["Stock"]).clip(lower=0)
     tabla["Compra"] = compra_raw.apply(lambda x: int(math.ceil(x/5.0)*5) if x > 0 else 0)
 
-    # Salida: Compra, luego Max, y V30D justo después de Stock
-    cols = ["Código", "Nombre", "Compra", "Max", "Stock", "V30D", "V365", "Prom365"]
+    # Salida: Compra → Stock → Max
+    cols = ["Código", "Nombre", "Compra", "Stock", "Max", "V30D", "V365", "Prom365"]
     if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
     if mostrar_proveedor:
