@@ -17,7 +17,7 @@ def _detect_data_start(df):
     """Primera fila donde col1 parece código y col3 es nombre de producto."""
     def is_code(x):
         s = str(x).strip()
-        return bool(re.match(r"^[A-Za-z0-9\-]+$", s)) and len(s) >= 3 and "codigo" not in s.lower()
+        return bool(re.match(r"^[A-Za-z0-9\\-]+$", s)) and len(s) >= 3 and "codigo" not in s.lower()
     for i in range(min(60, len(df))):
         c1 = df.iloc[i, 1] if df.shape[1] > 1 else None
         c3 = df.iloc[i, 3] if df.shape[1] > 3 else None
@@ -83,7 +83,7 @@ try:
 
     # Cálculos
     tabla["VtaDiaria"] = tabla["V365"] / divisor_v365
-    tabla["Prom365"]   = np.rint(tabla["VtaDiaria"] * dias).astype(int)  # renombrada
+    tabla["Prom365"]   = np.rint(tabla["VtaDiaria"] * dias).astype(int)
 
     v30, vprom = tabla["V30D"], tabla["Prom365"]
     intermedio = np.maximum(0.6 * v30 + 0.4 * vprom, v30)
@@ -95,8 +95,8 @@ try:
     compra_raw = (tabla["Max"] - tabla["Stock"]).clip(lower=0)
     tabla["Compra"] = compra_raw.apply(lambda x: int(math.ceil(x/5.0)*5) if x > 0 else 0)
 
-    # Salida: Compra y luego Max
-    cols = ["Código", "Nombre", "Compra", "Max", "Stock", "V365", "Prom365", "V30D"]
+    # Salida: Compra, luego Max, y V30D justo después de Stock
+    cols = ["Código", "Nombre", "Compra", "Max", "Stock", "V30D", "V365", "Prom365"]
     if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
     if mostrar_proveedor:
