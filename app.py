@@ -40,6 +40,13 @@ def _read_erply_xls_like_html(file_obj):
     ]
     return df.dropna(how="all").reset_index(drop=True)
 
+def _norm_str(x):
+    if pd.isna(x):
+        return ""
+    return str(x).strip().lower()
+
+MISSING_PROV_TOKENS = {"", "nan", "none", "null", "s/n", "sin proveedor", "na"}
+
 # -------- Entradas --------
 archivo = st.file_uploader("🗂️ Sube el archivo exportado desde Erply (.xls)", type=["xls"])
 
@@ -63,13 +70,25 @@ try:
 
     tabla = _read_erply_xls_like_html(archivo)
 
-    # Filtrado básico
+    # --- EXCLUSIÓN de descontinuados: proveedor vacío o equivalente ---
+    tabla["Proveedor_raw"] = tabla["Proveedor"]
+    tabla["Proveedor_norm"] = tabla["Proveedor_raw"].apply(_norm_str)
+    excl_mask = tabla["Proveedor_norm"].isin(MISSING_PROV_TOKENS)
+    excluidos = int(excl_mask.sum())
+    tabla = tabla.loc[~excl_mask].copy()  # excluir definitivamente
+    # ------------------------------------------------------------------
+
+    # Filtrado básico (ya sin descontinuados)
     tabla = tabla[tabla["Proveedor"].astype(str).str.strip().ne("")]
 
     if proveedor_unico:
-        provs = sorted(tabla["Proveedor"].dropna().astype(str).unique())
+        # Catálogo de proveedores válidos (sin tokens vacíos)
+        provs = sorted(
+            p for p in tabla["Proveedor"].dropna().astype(str).str.strip().unique()
+            if _norm_str(p) not in MISSING_PROV_TOKENS
+        )
         proveedor_sel = st.selectbox("Proveedor:", provs)
-        tabla = tabla[tabla["Proveedor"] == proveedor_sel]
+        tabla = tabla[tabla["Proveedor"].astype(str).str.strip() == proveedor_sel]
 
     # Tipificación
     tabla["Stock"] = _to_num(tabla["Stock (total)"]).round()
@@ -95,17 +114,20 @@ try:
     compra_raw = (tabla["Max"] - tabla["Stock"]).clip(lower=0)
     tabla["Compra"] = compra_raw.apply(lambda x: int(math.ceil(x/5.0)*5) if x > 0 else 0)
 
-    # Salida: Compra → Stock → Max
-    cols = ["Código", "Nombre", "Compra", "Stock", "Max", "V30D", "V365", "Prom365"]
+    # Salida: Compra → Stock → V30D → Max → V365 → Prom365
+    cols = ["Código", "Nombre", "Compra", "Stock", "V30D", "Max", "V365", "Prom365"]
     if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
     if mostrar_proveedor:
-        cols.insert(3, "Proveedor")
+        cols.insert(3, "Proveedor")  # después de Compra
 
     final = (tabla[tabla["Compra"] > 0]
              .sort_values("Nombre", na_position="last"))[cols]
 
     st.success("✅ Archivo procesado correctamente")
+    if excluidos > 0:
+        st.caption(f"🧹 Excluidos por proveedor vacío/descontinuado: {excluidos}")
+
     st.dataframe(final, use_container_width=True, height=520)
 
     # Descarga Excel (.xlsx)
