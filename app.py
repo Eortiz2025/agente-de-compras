@@ -54,7 +54,7 @@ colf = st.columns(3)
 with colf[0]:
     proveedor_unico = st.checkbox("Filtrar por proveedor específico", value=False)
 with colf[1]:
-    mostrar_proveedor = st.checkbox("Mostrar Proveedor en resultados", value=False)  # oculto por defecto
+    mostrar_proveedor = st.checkbox("Mostrar Proveedor en resultados", value=False)
 with colf[2]:
     solo_stock_cero = st.checkbox("Solo Stock = 0", value=False)
 solo_con_ventas_365 = st.checkbox("Solo con ventas en 365 días (>0)", value=False)
@@ -75,14 +75,13 @@ try:
     tabla["Proveedor_norm"] = tabla["Proveedor_raw"].apply(_norm_str)
     excl_mask = tabla["Proveedor_norm"].isin(MISSING_PROV_TOKENS)
     excluidos = int(excl_mask.sum())
-    tabla = tabla.loc[~excl_mask].copy()  # excluir definitivamente
+    tabla = tabla.loc[~excl_mask].copy()
     # ------------------------------------------------------------------
 
     # Filtrado básico (ya sin descontinuados)
     tabla = tabla[tabla["Proveedor"].astype(str).str.strip().ne("")]
 
     if proveedor_unico:
-        # Catálogo de proveedores válidos (sin tokens vacíos)
         provs = sorted(
             p for p in tabla["Proveedor"].dropna().astype(str).str.strip().unique()
             if _norm_str(p) not in MISSING_PROV_TOKENS
@@ -100,29 +99,28 @@ try:
     if solo_con_ventas_365:
         tabla = tabla[tabla["V365"] > 0]
 
-    # ---- Cálculos con regla nueva ----
-    # Promedio mensual desde V365
+    # ---- Cálculos con +10% ----
     tabla["VtaDiaria"] = tabla["V365"] / divisor_v365
     tabla["Prom365"]   = np.rint(tabla["VtaDiaria"] * dias).astype(int)
 
-    # Aumentar 20% al valor basado en V365
-    tabla["Prom365_adj"] = np.rint(tabla["Prom365"] * 1.20).astype(int)
+    # Aumentar 10% al valor basado en V365
+    tabla["Prom365_adj"] = np.rint(tabla["Prom365"] * 1.10).astype(int)
 
-    # Max = mayor entre V30D y Prom365 ajustado (+20%)
+    # Max = mayor entre V30D y Prom365 ajustado (+10%)
     tabla["Max"] = np.maximum(tabla["V30D"], tabla["Prom365_adj"]).astype(int)
 
-    # Compra = Max - Stock, redondeada al múltiplo de 5 hacia arriba
+    # Compra redondeada al múltiplo de 5 hacia arriba
     compra_raw = (tabla["Max"] - tabla["Stock"]).clip(lower=0)
     tabla["Compra"] = compra_raw.apply(
         lambda x: int(math.ceil(x / 5.0) * 5) if x > 0 else 0
     )
 
-    # Salida: Compra → Stock → V30D → Max → V365 → Prom365
+    # Salida
     cols = ["Código", "Nombre", "Compra", "Stock", "V30D", "Max", "V365", "Prom365"]
     if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
     if mostrar_proveedor:
-        cols.insert(3, "Proveedor")  # después de Compra
+        cols.insert(3, "Proveedor")
 
     final = (
         tabla[tabla["Compra"] > 0]
