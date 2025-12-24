@@ -7,7 +7,7 @@ import math
 
 st.set_page_config(page_title="Agente de Compras", page_icon="💼", layout="wide")
 st.title("💼 Agente de Compras")
-st.caption("Divisor fijo para V365: 342 (días hábiles). Días fijos: 30.")
+st.caption("Divisor fijo para V720: 684 (días hábiles). Días fijos: 30.")
 
 # -------- Utilidades --------
 def _to_num(s):
@@ -18,6 +18,7 @@ def _detect_data_start(df):
     def is_code(x):
         s = str(x).strip()
         return bool(re.match(r"^[A-Za-z0-9\\-]+$", s)) and len(s) >= 3 and "codigo" not in s.lower()
+
     for i in range(min(60, len(df))):
         c1 = df.iloc[i, 1] if df.shape[1] > 1 else None
         c3 = df.iloc[i, 3] if df.shape[1] > 3 else None
@@ -31,12 +32,14 @@ def _read_erply_xls_like_html(file_obj):
     df0 = pd.read_html(file_obj, header=None)[0]
     start = _detect_data_start(df0)
     df = df0.iloc[start:, :12].copy()
+
+    # OJO: aquí asumimos que la columna 11 (0-index) contiene la venta agregada del periodo (ahora V720).
     df.columns = [
         "No", "Código", "Código EAN", "Nombre",
         "Stock (total)", "Stock (apartado)", "Stock (disponible)",
         "Proveedor",
         "V30D", "Ventas corto ($)",
-        "V365", "Ventas 365 ($)"
+        "V720", "Ventas 720 ($)"
     ]
     return df.dropna(how="all").reset_index(drop=True)
 
@@ -57,7 +60,8 @@ with colf[1]:
     mostrar_proveedor = st.checkbox("Mostrar Proveedor en resultados", value=False)
 with colf[2]:
     solo_stock_cero = st.checkbox("Solo Stock = 0", value=False)
-solo_con_ventas_365 = st.checkbox("Solo con ventas en 365 días (>0)", value=False)
+
+solo_con_ventas_720 = st.checkbox("Solo con ventas en 720 días (>0)", value=False)
 
 if not archivo:
     st.info("Sube el archivo para continuar.")
@@ -65,7 +69,7 @@ if not archivo:
 
 # -------- Proceso --------
 try:
-    divisor_v365 = 342  # fijo
+    divisor_v720 = 684  # fijo
     dias = 30           # fijo
 
     tabla = _read_erply_xls_like_html(archivo)
@@ -92,22 +96,22 @@ try:
     # Tipificación
     tabla["Stock"] = _to_num(tabla["Stock (total)"]).round()
     tabla["V30D"]  = _to_num(tabla["V30D"]).round()
-    tabla["V365"]  = _to_num(tabla["V365"]).round()
+    tabla["V720"]  = _to_num(tabla["V720"]).round()
 
     if solo_stock_cero:
         tabla = tabla[tabla["Stock"].eq(0)]
-    if solo_con_ventas_365:
-        tabla = tabla[tabla["V365"] > 0]
+    if solo_con_ventas_720:
+        tabla = tabla[tabla["V720"] > 0]
 
     # ---- Cálculos con +10% ----
-    tabla["VtaDiaria"] = tabla["V365"] / divisor_v365
-    tabla["Prom365"]   = np.rint(tabla["VtaDiaria"] * dias).astype(int)
+    tabla["VtaDiaria"] = tabla["V720"] / divisor_v720
+    tabla["Prom720"]   = np.rint(tabla["VtaDiaria"] * dias).astype(int)
 
-    # Aumentar 10% al valor basado en V365
-    tabla["Prom365_adj"] = np.rint(tabla["Prom365"] * 1.10).astype(int)
+    # Aumentar 10% al valor basado en V720
+    tabla["Prom720_adj"] = np.rint(tabla["Prom720"] * 1.10).astype(int)
 
-    # Max = mayor entre V30D y Prom365 ajustado (+10%)
-    tabla["Max"] = np.maximum(tabla["V30D"], tabla["Prom365_adj"]).astype(int)
+    # Max = mayor entre V30D y Prom720 ajustado (+10%)
+    tabla["Max"] = np.maximum(tabla["V30D"], tabla["Prom720_adj"]).astype(int)
 
     # Compra redondeada al múltiplo de 5 hacia arriba
     compra_raw = (tabla["Max"] - tabla["Stock"]).clip(lower=0)
@@ -116,7 +120,7 @@ try:
     )
 
     # Salida
-    cols = ["Código", "Nombre", "Compra", "Stock", "V30D", "Max", "V365", "Prom365"]
+    cols = ["Código", "Nombre", "Compra", "Stock", "V30D", "Max", "V720", "Prom720"]
     if "Código EAN" in tabla.columns:
         cols.insert(1, "Código EAN")
     if mostrar_proveedor:
@@ -135,7 +139,7 @@ try:
 
     # Descarga Excel (.xlsx)
     exp = final.copy()
-    for c in ["Stock", "V365", "Prom365", "V30D", "Max", "Compra"]:
+    for c in ["Stock", "V720", "Prom720", "V30D", "Max", "Compra"]:
         if c in exp.columns:
             exp[c] = pd.to_numeric(exp[c], errors="coerce").fillna(0).astype(int)
 
@@ -152,13 +156,13 @@ try:
     )
 
     # Alerta
-    st.subheader("🔥 Top 10: V30D > Prom365 (orden alfabético)")
-    hot = exp[exp["V30D"] > exp["Prom365"]].sort_values("Nombre").head(10)
+    st.subheader("🔥 Top 10: V30D > Prom720 (orden alfabético)")
+    hot = exp[exp["V30D"] > exp["Prom720"]].sort_values("Nombre").head(10)
     if hot.empty:
-        st.info("✅ No hay productos con V30D > Prom365.")
+        st.info("✅ No hay productos con V30D > Prom720.")
     else:
         st.dataframe(
-            hot[["Código", "Nombre", "V365", "Prom365", "V30D"]],
+            hot[["Código", "Nombre", "V720", "Prom720", "V30D"]],
             use_container_width=True
         )
 
