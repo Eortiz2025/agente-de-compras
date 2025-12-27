@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="Máximos Ene/Feb 2024-2025", layout="wide")
+st.set_page_config(page_title="MaxEne / MaxFeb (2024-2025)", layout="wide")
 
 st.divider()
-st.header("Máximos de ventas por SKU — Ene y Feb (2024 y 2025)")
+st.header("Máximos por SKU — MaxEne y MaxFeb (entre 2024 y 2025)")
 
 hist_file = st.file_uploader(
     "Sube histórico (.xlsx) con columnas: Código, Nombre, Año, Mes, Ventas (Importe opcional)",
@@ -23,23 +23,23 @@ if missing:
     st.error(f"Faltan columnas: {sorted(missing)}")
     st.stop()
 
+# Normalizar
 df["Código"] = df["Código"].astype(str).str.strip()
 df["Nombre"] = df["Nombre"].astype(str).fillna("")
 df["Año"] = pd.to_numeric(df["Año"], errors="coerce")
 df["Mes"] = pd.to_numeric(df["Mes"], errors="coerce")
 df["Ventas"] = pd.to_numeric(df["Ventas"], errors="coerce").fillna(0)
 
-# Filtrar solo Ene/Feb y años 2024/2025
+# Filtrar a 2024-2025 y meses Ene/Feb
 base = df[df["Año"].isin([2024, 2025]) & df["Mes"].isin([1, 2])].copy()
 
-# Si tu histórico es mensual por SKU, el "max" por (Año, Mes) suele ser igual al valor.
-# Aun así, calculamos MAX por seguridad (por si hay duplicados).
+# Max por SKU por (Año, Mes) (por si hay duplicados)
 g = (
     base.groupby(["Código", "Nombre", "Año", "Mes"], as_index=False)["Ventas"]
     .max()
 )
 
-# Pivot a columnas
+# Pivot a columnas (Año, Mes)
 p = g.pivot_table(
     index=["Código", "Nombre"],
     columns=["Año", "Mes"],
@@ -48,44 +48,41 @@ p = g.pivot_table(
     fill_value=0
 )
 
-# Aplanar nombres de columnas
-def colname(y, m):
-    mm = "Ene" if m == 1 else "Feb"
-    return f"Max_{mm}_{y}"
+# Asegurar columnas aunque falten combinaciones
+needed = [(2024, 1), (2025, 1), (2024, 2), (2025, 2)]
+for col in needed:
+    if col not in p.columns:
+        p[col] = 0
 
-# Asegurar columnas aunque falte alguna combinación
-cols_needed = [(2024, 1), (2025, 1), (2024, 2), (2025, 2)]
-for c in cols_needed:
-    if c not in p.columns:
-        p[c] = 0
-
-out = p[cols_needed].copy()
-out.columns = [colname(y, m) for (y, m) in cols_needed]
+out = p[needed].copy()
+out.columns = ["Max_Ene_2024", "Max_Ene_2025", "Max_Feb_2024", "Max_Feb_2025"]
 out = out.reset_index()
 
-# Extras útiles
-out["Max_Ene_2425"] = out[["Max_Ene_2024", "Max_Ene_2025"]].max(axis=1)
-out["Max_Feb_2425"] = out[["Max_Feb_2024", "Max_Feb_2025"]].max(axis=1)
+# Colapsar a lo que quieres ver
+out["MaxEne"] = out[["Max_Ene_2024", "Max_Ene_2025"]].max(axis=1)
+out["MaxFeb"] = out[["Max_Feb_2024", "Max_Feb_2025"]].max(axis=1)
 
-# Mostrar
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("SKUs", f"{out['Código'].nunique():,}")
-c2.metric("Total Max Ene 2024", f"{out['Max_Ene_2024'].sum():,.0f}")
-c3.metric("Total Max Ene 2025", f"{out['Max_Ene_2025'].sum():,.0f}")
-c4.metric("Total Max Feb (24/25 máx)", f"{out['Max_Feb_2425'].sum():,.0f}")
+# Tabla final (solo lo esencial)
+final = out[["Código", "Nombre", "MaxEne", "MaxFeb"]].copy()
 
-st.subheader("Tabla (por SKU)")
+# KPIs
+c1, c2, c3 = st.columns(3)
+c1.metric("SKUs", f"{final['Código'].nunique():,}")
+c2.metric("Suma MaxEne", f"{final['MaxEne'].sum():,.0f}")
+c3.metric("Suma MaxFeb", f"{final['MaxFeb'].sum():,.0f}")
+
+st.subheader("Tabla final (por SKU)")
 st.dataframe(
-    out.sort_values(["Max_Ene_2425", "Max_Feb_2425"], ascending=False),
+    final.sort_values(["MaxEne", "MaxFeb"], ascending=False),
     use_container_width=True,
     height=560
 )
 
-# Descarga CSV
-csv = out.to_csv(index=False).encode("utf-8-sig")
+# Descarga
+csv = final.to_csv(index=False).encode("utf-8-sig")
 st.download_button(
     "Descargar CSV",
     data=csv,
-    file_name="max_ene_feb_2024_2025_por_sku.csv",
+    file_name="maxene_maxfeb_2024_2025_por_sku.csv",
     mime="text/csv"
 )
