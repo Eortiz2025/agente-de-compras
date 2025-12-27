@@ -7,8 +7,8 @@ import calendar
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="Compra sugerida 30 días (ponderada)", layout="wide")
-st.title("Compra sugerida – Inventario 30 días ponderado (Max mes actual + siguiente)")
+st.set_page_config(page_title="Agente de compras", layout="wide")
+st.title("Agente de compras")
 
 # =========================================================
 # LECTURA ERPLY .XLS (HTML) por posiciones:
@@ -61,15 +61,14 @@ def _read_erply_html(uploaded) -> pd.DataFrame:
     # Tomar columnas suficientes para llegar a G
     raw = chosen.iloc[start:, :10].copy().reset_index(drop=True)
 
-    # Construir salida por posiciones (B, D, E, G)
     out = pd.DataFrame({
         "Código": raw.iloc[:, 1].astype(str).str.strip(),
         "Nombre": raw.iloc[:, 3].astype(str).fillna(""),
-        "V30D": pd.to_numeric(raw.iloc[:, 4], errors="coerce").fillna(0),
-        "Stock": pd.to_numeric(raw.iloc[:, 6], errors="coerce").fillna(0),
+        "V30D": pd.to_numeric(raw.iloc[:, 4], errors="coerce").fillna(0),   # E
+        "Stock": pd.to_numeric(raw.iloc[:, 6], errors="coerce").fillna(0),  # G
     })
 
-    # Quitar filas basura sin código real
+    # Quitar filas basura
     out = out[out["Código"].astype(str).str.strip().ne("")]
     out = out[out["Código"].astype(str).str.lower().ne("nan")]
 
@@ -114,7 +113,6 @@ hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 
-# max por (Código, Nombre, Mes) tomando el máximo entre años
 g = hist.groupby(["Código", "Nombre", "Mes"], as_index=False)["Ventas"].max()
 
 p = g.pivot_table(
@@ -125,12 +123,10 @@ p = g.pivot_table(
     fill_value=0
 ).reset_index()
 
-# asegurar meses 1..12
 for m in range(1, 13):
     if m not in p.columns:
         p[m] = 0
 
-# renombrar a Max_M01..Max_M12
 p = p.rename(columns={m: f"Max_M{m:02d}" for m in range(1, 13)})
 max_mes_df = p.rename(columns={"Nombre": "Nombre_hist"})
 
@@ -138,13 +134,14 @@ max_mes_df = p.rename(columns={"Nombre": "Nombre_hist"})
 # LEER ERPLY
 # =========================================================
 vs = _read_erply_html(erply_file)
+vs["V30D"] = pd.to_numeric(vs["V30D"], errors="coerce").fillna(0)
+vs["Stock"] = pd.to_numeric(vs["Stock"], errors="coerce").fillna(0)
 
 # =========================================================
 # MERGE
 # =========================================================
 final = vs.merge(max_mes_df, on="Código", how="left")
 
-# Nombre final: usa el de Erply si existe, si no el del histórico
 final["Nombre_hist"] = final.get("Nombre_hist", "").fillna("")
 final["Nombre"] = final["Nombre"].astype(str).fillna("")
 final["Nombre"] = final["Nombre"].where(final["Nombre"].str.strip().ne(""), final["Nombre_hist"])
@@ -167,12 +164,15 @@ mes_siguiente = 1 if mes_actual == 12 else mes_actual + 1
 col_act = f"Max_M{mes_actual:02d}"
 col_sig = f"Max_M{mes_siguiente:02d}"
 
-# Debug visible (para que nunca haya duda)
-st.caption(f"Fecha Mazatlán: {hoy} | Mes actual={mes_actual} peso={peso_actual:.4f} | Mes siguiente={mes_siguiente} peso={peso_siguiente:.4f}")
+st.caption(
+    f"Fecha Mazatlán: {hoy} | Mes actual={mes_actual} peso={peso_actual:.4f} | "
+    f"Mes siguiente={mes_siguiente} peso={peso_siguiente:.4f}"
+)
 st.caption(f"Columnas usadas: {col_act} y {col_sig}")
 
 # =========================================================
-# DEMANDA 30 DÍAS PONDERADA (MAX MES ACTUAL + SIGUIENTE)
+# DEMANDA 30 DÍAS (PONDERADA) + FALLBACK A V30D:
+# Si (MaxMes_actual + MaxMes_sig) == 0 => usar V30D (si V30D>0)
 # =========================================================
 if col_act not in final.columns:
     final[col_act] = 0
@@ -184,14 +184,18 @@ final[col_sig] = pd.to_numeric(final[col_sig], errors="coerce").fillna(0)
 
 final["Demanda30"] = (peso_actual * final[col_act]) + (peso_siguiente * final[col_sig])
 
+suma_max_2m = final[col_act] + final[col_sig]
+mask_fallback = (suma_max_2m == 0) & (final["V30D"] > 0)
+
+final.loc[mask_fallback, "Demanda30"] = final.loc[mask_fallback, "V30D"]
+
 # =========================================================
 # COMPRA SUGERIDA = max(0, Demanda30 - Stock) redondeo arriba
 # =========================================================
-final["Stock"] = pd.to_numeric(final["Stock"], errors="coerce").fillna(0)
 final["Compra_sugerida"] = np.ceil(final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
 
 # =========================================================
-# TABLA FINAL (SOLO MES ACTUAL + SIGUIENTE)
+# TABLA FINAL
 # =========================================================
 tabla = final[
     ["Código", "Nombre", "Stock", "V30D", col_act, col_sig, "Demanda30", "Compra_sugerida"]
