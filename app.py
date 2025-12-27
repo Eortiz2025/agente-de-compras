@@ -7,8 +7,21 @@ import calendar
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+# =========================
+# CONFIG + VERSION
+# =========================
+APP_VERSION = "2025-12-27-v3 (Métrica Enero + cache reset + bugfix Nombre_hist)"
+
 st.set_page_config(page_title="Agente de compras", layout="wide")
 st.title("Agente de compras")
+st.caption(f"Versión app: {APP_VERSION}")
+
+# Sidebar: controles duros para que Streamlit no te “muestre viejo”
+with st.sidebar:
+    st.header("Controles")
+    if st.button("Limpiar caché y reiniciar"):
+        st.cache_data.clear()
+        st.rerun()
 
 # =========================================================
 # LECTURA ERPLY .XLS (HTML) por posiciones:
@@ -30,7 +43,7 @@ def _looks_like_table(df: pd.DataFrame) -> bool:
     for i in range(min(120, len(df))):
         cB = df.iloc[i, 1] if df.shape[1] > 1 else None
         cD = df.iloc[i, 3] if df.shape[1] > 3 else None
-        if is_code(cB) and isinstance(cD, str) and len(cD.strip()) > 2:
+        if is_code(cB) and isinstance(cD, str) and len(str(cD).strip()) > 2:
             return True
     return False
 
@@ -46,8 +59,8 @@ def _detect_data_start(df: pd.DataFrame) -> int:
             return i
     return 0
 
-def _read_erply_html(uploaded) -> pd.DataFrame:
-    data = uploaded.getvalue()
+@st.cache_data(show_spinner=False)
+def read_erply_html_bytes(data: bytes) -> pd.DataFrame:
     tables = pd.read_html(io.BytesIO(data), header=None)
 
     chosen = None
@@ -82,7 +95,17 @@ def _read_erply_html(uploaded) -> pd.DataFrame:
     # normalizar EAN: si viene "nan"
     out["EAN"] = out["EAN"].replace({"nan": "", "None": "", "NONE": ""})
 
+    # tipos
+    out["V30D"] = pd.to_numeric(out["V30D"], errors="coerce").fillna(0)
+    out["Stock"] = pd.to_numeric(out["Stock"], errors="coerce").fillna(0)
+    out["V30D_Pesos"] = pd.to_numeric(out["V30D_Pesos"], errors="coerce").fillna(0)
+
     return out.reset_index(drop=True)
+
+@st.cache_data(show_spinner=False)
+def read_hist_xlsx_bytes(data: bytes) -> pd.DataFrame:
+    hist = pd.read_excel(io.BytesIO(data), engine="openpyxl")
+    return hist
 
 # =========================================================
 # UPLOADERS
@@ -104,12 +127,17 @@ if hist_file is None or erply_file is None:
     st.stop()
 
 # =========================================================
-# LEER HISTÓRICO Y CALCULAR MAX POR MES (2024-2025)
-# - pivote SOLO por Código para evitar duplicados si el nombre cambió
-# - el nombre vigente lo manda Erply; histórico solo fallback
+# LEER ARCHIVOS (bytes) — evita que Streamlit te muestre viejo
 # =========================================================
-hist = pd.read_excel(hist_file, engine="openpyxl")
+hist_bytes = hist_file.getvalue()
+erply_bytes = erply_file.getvalue()
 
+hist = read_hist_xlsx_bytes(hist_bytes)
+vs = read_erply_html_bytes(erply_bytes)
+
+# =========================================================
+# VALIDAR HISTÓRICO
+# =========================================================
 req = {"Código", "Nombre", "Año", "Mes", "Ventas"}
 missing = req - set(hist.columns)
 if missing:
@@ -123,8 +151,12 @@ hist["Año"] = pd.to_numeric(hist["Año"], errors="coerce")
 hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce")
 hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 
+# SOLO 2024-2025 (tu lógica original)
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 
+# =========================================================
+# HISTÓRICO -> MAX POR MES (por Código)
+# =========================================================
 nombre_hist = (
     hist.loc[hist["Nombre"].ne(""), ["Código", "Nombre"]]
         .drop_duplicates(subset=["Código"], keep="first")
@@ -149,22 +181,13 @@ p = p.rename(columns={m: f"Max_M{m:02d}" for m in range(1, 13)})
 max_mes_df = p.merge(nombre_hist, on="Código", how="left")
 
 # =========================================================
-# LEER ERPLY
-# =========================================================
-vs = _read_erply_html(erply_file)
-vs["V30D"] = pd.to_numeric(vs["V30D"], errors="coerce").fillna(0)
-vs["Stock"] = pd.to_numeric(vs["Stock"], errors="coerce").fillna(0)
-vs["V30D_Pesos"] = pd.to_numeric(vs["V30D_Pesos"], errors="coerce").fillna(0)
-
-# =========================================================
-# MERGE
+# MERGE ERPLY + HISTÓRICO
 # =========================================================
 final = vs.merge(max_mes_df, on="Código", how="left")
 
 # =========================================================
-# NOMBRE: manda SIEMPRE el de Erply (vigente).
-# Solo si viene vacío, cae al histórico; si no hay, "(sin nombre)".
-# BUG FIX: asegurar que Nombre_hist exista como columna válida.
+# NOMBRE: manda Erply; fallback histórico; si no hay "(sin nombre)"
+# (FIX REAL: garantizar columna Nombre_hist válida)
 # =========================================================
 final["Nombre_erply"] = final["Nombre"].astype(str).fillna("").str.strip()
 
@@ -205,8 +228,7 @@ st.caption(
 st.caption(f"Columnas usadas: {col_act} y {col_sig}")
 
 # =========================================================
-# DEMANDA 30 DÍAS (PONDERADA) + FALLBACK A V30D:
-# Si (MaxMes_actual + MaxMes_sig) == 0 => usar V30D (si V30D>0)
+# DEMANDA 30 DÍAS (PONDERADA) + FALLBACK A V30D
 # =========================================================
 if col_act not in final.columns:
     final[col_act] = 0
@@ -223,15 +245,13 @@ mask_fallback = (suma_max_2m == 0) & (final["V30D"] > 0)
 final.loc[mask_fallback, "Demanda30"] = final.loc[mask_fallback, "V30D"]
 
 # =========================================================
-# COMPRA SUGERIDA = max(0, Demanda30 - Stock) redondeo arriba
+# COMPRA SUGERIDA
 # =========================================================
 final["Compra_sugerida"] = np.ceil(final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
-
-# Demanda30 sin decimales SOLO para mostrar
 final["Demanda30_mostrar"] = np.round(final["Demanda30"], 0).astype(int)
 
 # =========================================================
-# TABLA FINAL (EAN después de Código)
+# TABLA FINAL
 # =========================================================
 tabla = final[
     ["Código", "EAN", "Nombre", "Compra_sugerida", "Stock", "V30D", col_act, col_sig, "Demanda30_mostrar"]
@@ -243,11 +263,10 @@ tabla = final[
 })
 
 # =========================================================
-# MÉTRICAS
-# - Reemplaza "Suma Compra sugerida" por "Ventas Enero (histórico)"
-# - Usa primero enero del año actual si existe; si no, enero más reciente del histórico
+# MÉTRICA 4: VENTAS ENERO (HISTÓRICO)
+# Nota: asumo que hist["Ventas"] es el “importe” que quieres.
+# Prioridad: Enero del año actual si existe; si no, Enero más reciente disponible.
 # =========================================================
-# OJO: aquí se asume que hist["Ventas"] es el "importe" que quieres mostrar.
 jan_current = hist[(hist["Año"] == hoy.year) & (hist["Mes"] == 1)]["Ventas"].sum()
 
 if jan_current > 0:
@@ -260,6 +279,9 @@ else:
     else:
         ventas_enero_importe = 0.0
 
+# =========================================================
+# UI (MÉTRICAS)
+# =========================================================
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("SKUs Erply", f"{tabla['Código'].nunique():,}")
 m2.metric("Suma Stock", f"{tabla['Stock'].sum():,.0f}")
@@ -267,7 +289,7 @@ m3.metric("Suma V30D (info)", f"{vs['V30D_Pesos'].sum():,.0f}")
 m4.metric("Ventas Enero (histórico)", f"${ventas_enero_importe:,.2f}")
 
 # =========================================================
-# UI
+# UI (TABLA)
 # =========================================================
 st.subheader("Tabla unificada + compra sugerida")
 st.dataframe(
