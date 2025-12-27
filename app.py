@@ -1,10 +1,89 @@
 import streamlit as st
 import pandas as pd
+import re
 
 st.set_page_config(page_title="MaxEne/MaxFeb + V30D", layout="wide")
 
 st.divider()
 st.header("Unión: Histórico (MaxEne/MaxFeb) + V30D + Stock")
+
+# -------------------------
+# Lector .xls (HTML) tipo Erply — tomado del script que compartiste
+# -------------------------
+def _detect_data_start(df):
+    """Primera fila donde col1 parece código y col3 es nombre de producto."""
+    def is_code(x):
+        s = str(x).strip()
+        return bool(re.match(r"^[A-Za-z0-9\\-]+$", s)) and len(s) >= 3 and "codigo" not in s.lower()
+
+    for i in range(min(60, len(df))):
+        c1 = df.iloc[i, 1] if df.shape[1] > 1 else None
+        c3 = df.iloc[i, 3] if df.shape[1] > 3 else None
+        if is_code(c1) and isinstance(c3, str) and len(str(c3).strip()) > 2 and "nombre" not in str(c3).lower():
+            return i
+    return 0
+
+def _read_erply_xls_like_html(file_obj) -> pd.DataFrame:
+    """
+    Lee el .xls (que en realidad es HTML) exportado por Erply.
+    Devuelve un DataFrame con columnas fijas por posición.
+    """
+    file_obj.seek(0)
+    df0 = pd.read_html(file_obj, header=None)[0]
+    start = _detect_data_start(df0)
+    df = df0.iloc[start:, :12].copy()
+    df.columns = [
+        "No", "Código", "Código EAN", "Nombre",
+        "Stock (total)", "Stock (apartado)", "Stock (disponible)",
+        "Proveedor",
+        "V30D", "Ventas corto ($)",
+        "V365", "Ventas 365 ($)"
+    ]
+    return df.dropna(how="all").reset_index(drop=True)
+
+def read_v30_stock(uploaded) -> pd.DataFrame:
+    """
+    Lee V30D+Stock en:
+    - .csv (normal)
+    - .xlsx (normal)
+    - .xls real (xlrd)
+    - .xls HTML de Erply (read_html + parse por posición)
+    Devuelve SIEMPRE un df con columnas: Código, Nombre (opcional), V30D, Stock
+    """
+    name = uploaded.name.lower()
+
+    # CSV
+    if name.endswith(".csv"):
+        df = pd.read_csv(uploaded)
+        return df
+
+    # XLSX
+    if name.endswith(".xlsx"):
+        df = pd.read_excel(uploaded, engine="openpyxl")
+        return df
+
+    # XLS: puede ser real o HTML disfrazado
+    if name.endswith(".xls"):
+        # 1) intentar como HTML-Erply (es lo que te está pasando)
+        try:
+            t = _read_erply_xls_like_html(uploaded)
+
+            # Convertir a formato estándar (Código, Nombre, V30D, Stock)
+            out = pd.DataFrame({
+                "Código": t["Código"],
+                "Nombre": t["Nombre"],
+                "V30D": pd.to_numeric(t["V30D"], errors="coerce").fillna(0),
+                "Stock": pd.to_numeric(t["Stock (total)"], errors="coerce").fillna(0),
+            })
+            return out
+
+        except Exception:
+            # 2) si no es HTML, intentar como XLS real con xlrd
+            uploaded.seek(0)
+            df = pd.read_excel(uploaded, engine="xlrd")
+            return df
+
+    raise ValueError("Formato de V30D+Stock no soportado (usa .xlsx, .csv o .xls).")
 
 # -------------------------
 # Uploaders
@@ -19,7 +98,7 @@ with colL:
 
 with colR:
     v30_file = st.file_uploader(
-        "2) Sube V30D + Stock (.xls/.xlsx/.csv) — columnas mínimas: Código, V30D, Stock (Nombre opcional)",
+        "2) Sube V30D + Stock (.xls/.xlsx/.csv)",
         type=["xls", "xlsx", "csv"]
     )
 
@@ -50,7 +129,6 @@ hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 # -------------------------
 base = hist[hist["Año"].isin([2024, 2025]) & hist["Mes"].isin([1, 2])].copy()
 
-# Max por SKU por (Año, Mes) por si hay duplicados
 g = (
     base.groupby(["Código", "Nombre", "Año", "Mes"], as_index=False)["Ventas"]
     .max()
@@ -79,28 +157,24 @@ out["MaxFeb"] = out[["Max_Feb_2024", "Max_Feb_2025"]].max(axis=1)
 max_df = out[["Código", "Nombre", "MaxEne", "MaxFeb"]].copy()
 
 # -------------------------
-# Leer V30D + Stock (xls/xlsx/csv) y validar
+# Leer V30D + Stock y validar
 # -------------------------
-fname = v30_file.name.lower()
-
 try:
-    if fname.endswith(".xls"):
-        vs = pd.read_excel(v30_file, engine="xlrd")
-    elif fname.endswith(".xlsx"):
-        vs = pd.read_excel(v30_file, engine="openpyxl")
-    else:
-        vs = pd.read_csv(v30_file)
+    vs = read_v30_stock(v30_file)
 except Exception as e:
     st.error(f"No pude leer el archivo V30D+Stock. Error: {e}")
     st.stop()
 
+# Si el archivo NO venía en formato estándar, aquí normalizamos a lo mínimo
+# (por ejemplo si lo leímos como XLS real y trae nombres distintos, fallará abajo)
 req_vs = {"Código", "V30D", "Stock"}
 missing2 = req_vs - set(vs.columns)
 if missing2:
     st.error(
         "V30D+Stock: faltan columnas.\n"
         f"Faltan: {sorted(missing2)}\n\n"
-        f"Columnas encontradas: {list(vs.columns)}"
+        f"Columnas encontradas: {list(vs.columns)}\n\n"
+        "Si tu archivo tiene otros nombres de columnas, dímelos y lo mapeo."
     )
     st.stop()
 
@@ -118,11 +192,9 @@ if "Nombre" not in vs.columns:
 # -------------------------
 final = vs.merge(max_df, on="Código", how="left", suffixes=("_v30", "_hist"))
 
-# Resolver nombre final: preferir Nombre del archivo V30D si viene; si no, el del histórico
 final["Nombre_final"] = final["Nombre"].where(final["Nombre"].astype(str).str.strip() != "", final["Nombre_hist"])
 final["Nombre_final"] = final["Nombre_final"].fillna("")
 
-# Si no existe en histórico (SKU nuevo), MaxEne/MaxFeb quedan 0
 final["MaxEne"] = pd.to_numeric(final.get("MaxEne"), errors="coerce").fillna(0)
 final["MaxFeb"] = pd.to_numeric(final.get("MaxFeb"), errors="coerce").fillna(0)
 
@@ -146,7 +218,6 @@ st.dataframe(
     height=560
 )
 
-# Descarga
 csv = tabla.to_csv(index=False).encode("utf-8-sig")
 st.download_button(
     "Descargar CSV",
