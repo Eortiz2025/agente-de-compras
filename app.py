@@ -1,7 +1,6 @@
 # app.py
-# Base 1 — Histórico
-# Comparativo por mes (por defecto: Enero 2024 vs Enero 2025)
-# Lee histórico y muestra resumen + detalle por SKU
+# Histórico — Comparativo por mes (Enero 2024 vs Enero 2025)
+# Resumen + detalle por SKU
 
 import pandas as pd
 import streamlit as st
@@ -10,7 +9,7 @@ import streamlit as st
 # Configuración
 # -------------------------
 st.set_page_config(page_title="Histórico — Comparativos", layout="wide")
-st.title("Histórico — Comparativo por mes")
+st.title("Histórico — Comparativo por mes (Enero 2024 vs Enero 2025)")
 
 # -------------------------
 # Sidebar
@@ -31,21 +30,17 @@ if hist_file is None:
     st.stop()
 
 # -------------------------
-# Leer y validar archivo
+# Leer y validar
 # -------------------------
-try:
-    df = pd.read_excel(hist_file)
-except Exception as e:
-    st.error(f"No se pudo leer el Excel: {e}")
-    st.stop()
+df = pd.read_excel(hist_file)
 
-required_cols = {"Código", "Nombre", "Año", "Mes", "Ventas"}
-missing = required_cols - set(df.columns)
+required = {"Código", "Nombre", "Año", "Mes", "Ventas"}
+missing = required - set(df.columns)
 if missing:
-    st.error(f"Faltan columnas requeridas: {sorted(missing)}")
+    st.error(f"Faltan columnas en el archivo: {sorted(missing)}")
     st.stop()
 
-# Normalizar datos
+# Normalización
 df = df.copy()
 df["Código"] = df["Código"].astype(str).str.strip()
 df["Nombre"] = df["Nombre"].astype(str).fillna("")
@@ -58,14 +53,11 @@ if has_importe:
     df["Importe"] = pd.to_numeric(df["Importe"], errors="coerce").fillna(0)
 
 # -------------------------
-# Filtrar mes y años
+# Cálculos
 # -------------------------
 sub_a = df[(df["Año"] == int(anio_a)) & (df["Mes"] == int(mes))]
 sub_b = df[(df["Año"] == int(anio_b)) & (df["Mes"] == int(mes))]
 
-# -------------------------
-# Cálculos resumen
-# -------------------------
 u_a = float(sub_a["Ventas"].sum())
 u_b = float(sub_b["Ventas"].sum())
 delta_u = u_b - u_a
@@ -125,9 +117,6 @@ b_units = (
 
 detalle = a_units.merge(b_units, on=["Código", "Nombre"], how="outer").fillna(0)
 detalle["Delta_unidades"] = detalle[f"Unidades_{int(anio_b)}"] - detalle[f"Unidades_{int(anio_a)}"]
-
-cols = ["Código", "Nombre", f"Unidades_{int(anio_a)}", f"Unidades_{int(anio_b)}", "Delta_unidades"]
-detalle = detalle[cols]
 
 tab1, tab2 = st.tabs(["Bajan más", "Suben más"])
 with tab1:
