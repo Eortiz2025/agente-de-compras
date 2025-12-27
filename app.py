@@ -16,7 +16,7 @@ st.title("Agente de compras")
 # D = Nombre (idx 3)
 # E = V30D  (idx 4)
 # G = Stock (idx 6)
-# L = Importe venta $ (idx 11)   <-- NUEVO (para métrica)
+# L = Importe venta $ (idx 11)
 # =========================================================
 def _looks_like_table(df: pd.DataFrame) -> bool:
     if df is None or df.empty or df.shape[1] < 12:
@@ -70,10 +70,8 @@ def _read_erply_html(uploaded) -> pd.DataFrame:
         "V30D_Pesos": pd.to_numeric(raw.iloc[:, 11], errors="coerce").fillna(0),       # L
     })
 
-    # Quitar filas basura
     out = out[out["Código"].astype(str).str.strip().ne("")]
     out = out[out["Código"].astype(str).str.lower().ne("nan")]
-
     return out.reset_index(drop=True)
 
 # =========================================================
@@ -196,19 +194,19 @@ final.loc[mask_fallback, "Demanda30"] = final.loc[mask_fallback, "V30D"]
 # =========================================================
 final["Compra_sugerida"] = np.ceil(final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
 
-# Demanda30 SIN decimales (solo para mostrar; NO cambia la lógica)
-final["Demanda30_int"] = np.round(final["Demanda30"], 0).astype(int)
+# Demanda30 sin decimales SOLO para mostrar
+final["Demanda30_mostrar"] = np.round(final["Demanda30"], 0).astype(int)
 
 # =========================================================
-# TABLA FINAL (Compra primero + Demanda30 sin decimales)
+# TABLA FINAL (Compra después del Nombre)
 # =========================================================
 tabla = final[
-    ["Compra_sugerida", "Código", "Nombre", "Stock", "V30D", col_act, col_sig, "Demanda30_int"]
+    ["Código", "Nombre", "Compra_sugerida", "Stock", "V30D", col_act, col_sig, "Demanda30_mostrar"]
 ].rename(columns={
     "Compra_sugerida": "Compra",
     col_act: f"MaxMes_{mes_actual:02d}",
     col_sig: f"MaxMes_{mes_siguiente:02d}",
-    "Demanda30_int": "Demanda30"
+    "Demanda30_mostrar": "Demanda30"
 })
 
 # =========================================================
@@ -217,7 +215,7 @@ tabla = final[
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("SKUs Erply", f"{tabla['Código'].nunique():,}")
 m2.metric("Suma Stock", f"{tabla['Stock'].sum():,.0f}")
-m3.metric("Suma V30D (info)", f"{vs['V30D_Pesos'].sum():,.0f}")  # <-- ahora usa columna L ($)
+m3.metric("Suma V30D (info)", f"{vs['V30D_Pesos'].sum():,.0f}")
 m4.metric("Suma Compra sugerida", f"{tabla['Compra'].sum():,.0f}")
 
 st.subheader("Tabla unificada + compra sugerida")
