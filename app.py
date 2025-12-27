@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import io
 
 st.set_page_config(page_title="MaxEne/MaxFeb + V30D", layout="wide")
 
@@ -8,30 +9,35 @@ st.divider()
 st.header("Unión: Histórico (MaxEne/MaxFeb) + V30D + Stock")
 
 # -------------------------
-# Lector .xls (HTML) tipo Erply — tomado del script que compartiste
+# Lector .xls (HTML) tipo Erply
 # -------------------------
-def _detect_data_start(df):
+def _detect_data_start(df: pd.DataFrame) -> int:
     """Primera fila donde col1 parece código y col3 es nombre de producto."""
     def is_code(x):
         s = str(x).strip()
-        return bool(re.match(r"^[A-Za-z0-9\\-]+$", s)) and len(s) >= 3 and "codigo" not in s.lower()
+        return bool(re.match(r"^[A-Za-z0-9\-]+$", s)) and len(s) >= 3 and "codigo" not in s.lower()
 
-    for i in range(min(60, len(df))):
-        c1 = df.iloc[i, 1] if df.shape[1] > 1 else None
-        c3 = df.iloc[i, 3] if df.shape[1] > 3 else None
+    for i in range(min(80, len(df))):
+        c1 = df.iloc[i, 1] if df.shape[1] > 1 else None   # Código
+        c3 = df.iloc[i, 3] if df.shape[1] > 3 else None   # Nombre
         if is_code(c1) and isinstance(c3, str) and len(str(c3).strip()) > 2 and "nombre" not in str(c3).lower():
             return i
     return 0
 
-def _read_erply_xls_like_html(file_obj) -> pd.DataFrame:
+def _read_erply_xls_like_html(uploaded) -> pd.DataFrame:
     """
     Lee el .xls (que en realidad es HTML) exportado por Erply.
-    Devuelve un DataFrame con columnas fijas por posición.
+    IMPORTANTE: Streamlit UploadedFile a veces falla si lo pasas directo;
+    aquí leemos desde bytes (getvalue) para evitar el error BOF / <html>.
     """
-    file_obj.seek(0)
-    df0 = pd.read_html(file_obj, header=None)[0]
+    data = uploaded.getvalue()
+    # Pandas read_html acepta file-like
+    df0 = pd.read_html(io.BytesIO(data), header=None)[0]
+
     start = _detect_data_start(df0)
     df = df0.iloc[start:, :12].copy()
+
+    # Columnas por posición (según export típico Erply)
     df.columns = [
         "No", "Código", "Código EAN", "Nombre",
         "Stock (total)", "Stock (apartado)", "Stock (disponible)",
@@ -44,11 +50,11 @@ def _read_erply_xls_like_html(file_obj) -> pd.DataFrame:
 def read_v30_stock(uploaded) -> pd.DataFrame:
     """
     Lee V30D+Stock en:
-    - .csv (normal)
-    - .xlsx (normal)
+    - .csv
+    - .xlsx
+    - .xls HTML de Erply (read_html desde bytes)
     - .xls real (xlrd)
-    - .xls HTML de Erply (read_html + parse por posición)
-    Devuelve SIEMPRE un df con columnas: Código, Nombre (opcional), V30D, Stock
+    Devuelve df con columnas mínimas: Código, (Nombre opcional), V30D, Stock
     """
     name = uploaded.name.lower()
 
@@ -62,23 +68,20 @@ def read_v30_stock(uploaded) -> pd.DataFrame:
         df = pd.read_excel(uploaded, engine="openpyxl")
         return df
 
-    # XLS: puede ser real o HTML disfrazado
+    # XLS: puede ser HTML disfrazado o xls real
     if name.endswith(".xls"):
-        # 1) intentar como HTML-Erply (es lo que te está pasando)
+        # 1) intentar HTML-Erply
         try:
             t = _read_erply_xls_like_html(uploaded)
-
-            # Convertir a formato estándar (Código, Nombre, V30D, Stock)
             out = pd.DataFrame({
-                "Código": t["Código"],
-                "Nombre": t["Nombre"],
+                "Código": t["Código"].astype(str).str.strip(),
+                "Nombre": t["Nombre"].astype(str).fillna(""),
                 "V30D": pd.to_numeric(t["V30D"], errors="coerce").fillna(0),
                 "Stock": pd.to_numeric(t["Stock (total)"], errors="coerce").fillna(0),
             })
             return out
-
         except Exception:
-            # 2) si no es HTML, intentar como XLS real con xlrd
+            # 2) si no es HTML, intentar XLS binario real con xlrd
             uploaded.seek(0)
             df = pd.read_excel(uploaded, engine="xlrd")
             return df
@@ -109,7 +112,7 @@ if hist_file is None or v30_file is None:
 # -------------------------
 # Leer histórico y validar
 # -------------------------
-hist = pd.read_excel(hist_file)
+hist = pd.read_excel(hist_file, engine="openpyxl")
 
 req_hist = {"Código", "Nombre", "Año", "Mes", "Ventas"}
 missing = req_hist - set(hist.columns)
@@ -162,11 +165,14 @@ max_df = out[["Código", "Nombre", "MaxEne", "MaxFeb"]].copy()
 try:
     vs = read_v30_stock(v30_file)
 except Exception as e:
-    st.error(f"No pude leer el archivo V30D+Stock. Error: {e}")
+    st.error(
+        "No pude leer el archivo V30D+Stock.\n"
+        f"Error: {e}\n\n"
+        "Tip: si tu archivo viene de Erply, normalmente es HTML disfrazado de .xls.\n"
+        "Este script ya lo soporta; si sigue fallando, conviértelo a .xlsx y súbelo."
+    )
     st.stop()
 
-# Si el archivo NO venía en formato estándar, aquí normalizamos a lo mínimo
-# (por ejemplo si lo leímos como XLS real y trae nombres distintos, fallará abajo)
 req_vs = {"Código", "V30D", "Stock"}
 missing2 = req_vs - set(vs.columns)
 if missing2:
@@ -183,7 +189,7 @@ vs["Código"] = vs["Código"].astype(str).str.strip()
 vs["V30D"] = pd.to_numeric(vs["V30D"], errors="coerce").fillna(0)
 vs["Stock"] = pd.to_numeric(vs["Stock"], errors="coerce").fillna(0)
 
-# Nombre en V30D+Stock es opcional
+# Nombre opcional
 if "Nombre" not in vs.columns:
     vs["Nombre"] = ""
 
@@ -192,6 +198,7 @@ if "Nombre" not in vs.columns:
 # -------------------------
 final = vs.merge(max_df, on="Código", how="left", suffixes=("_v30", "_hist"))
 
+# escoger nombre final: si viene en V30, úsalo; si no, toma el del histórico
 final["Nombre_final"] = final["Nombre"].where(final["Nombre"].astype(str).str.strip() != "", final["Nombre_hist"])
 final["Nombre_final"] = final["Nombre_final"].fillna("")
 
