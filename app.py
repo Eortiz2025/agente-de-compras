@@ -10,16 +10,19 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2025-12-27-v3-fast (same outputs; faster Erply + fewer copies)"
+APP_VERSION = "2025-12-27-v3-fast (UI button top + metrics tweak)"
 
 st.set_page_config(page_title="Agente de compras", layout="wide")
-st.title("Agente de compras")
-st.caption(f"Versión app: {APP_VERSION}")
 
-# Sidebar: controles duros para que Streamlit no te “muestre viejo”
-with st.sidebar:
-    st.header("Controles")
-    if st.button("Limpiar caché y reiniciar"):
+# =========================================================
+# TOP BAR: TÍTULO + BOTÓN (AL LADO)
+# =========================================================
+tcol1, tcol2 = st.columns([0.78, 0.22], vertical_alignment="center")
+with tcol1:
+    st.title("Agente de compras")
+    st.caption(f"Versión app: {APP_VERSION}")
+with tcol2:
+    if st.button("Limpiar caché y reiniciar", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
@@ -45,7 +48,6 @@ def _looks_like_table(df: pd.DataFrame) -> bool:
         s = str(x).strip()
         return bool(CODE_RE.match(s)) and len(s) >= 3 and "codigo" not in s.lower()
 
-    # baja el scan un poco (antes 120); no cambia salida si Erply no trae encabezados enormes
     for i in range(min(100, len(df))):
         cB = df.iloc[i, 1] if df.shape[1] > 1 else None
         cD = df.iloc[i, 3] if df.shape[1] > 3 else None
@@ -58,7 +60,6 @@ def _detect_data_start(df: pd.DataFrame) -> int:
         s = str(x).strip()
         return bool(CODE_RE.match(s)) and len(s) >= 3 and "codigo" not in s.lower()
 
-    # antes 250; reducimos a 180 para acelerar (sin cambiar datos típicos)
     for i in range(min(180, len(df))):
         cB = df.iloc[i, 1] if df.shape[1] > 1 else None
         cD = df.iloc[i, 3] if df.shape[1] > 3 else None
@@ -68,21 +69,14 @@ def _detect_data_start(df: pd.DataFrame) -> int:
 
 @st.cache_data(show_spinner=False)
 def read_erply_html_bytes(data: bytes) -> pd.DataFrame:
-    # read_html suele ser lo más pesado; intentamos reducir trabajo eligiendo mejor tabla
-    # (sin cambiar la lógica de extracción por índices).
     try:
         tables = pd.read_html(io.BytesIO(data), header=None, flavor="lxml")
     except Exception:
         tables = pd.read_html(io.BytesIO(data), header=None)
 
-    # 1) prioriza tabla grande con >=12 columnas
     candidates = [t for t in tables if t is not None and not t.empty and t.shape[1] >= 12]
-    if candidates:
-        chosen = max(candidates, key=lambda t: t.shape[0])
-    else:
-        chosen = tables[0]
+    chosen = max(candidates, key=lambda t: t.shape[0]) if candidates else tables[0]
 
-    # 2) valida heurística; si falla, busca la primera que sí parezca tabla
     if not _looks_like_table(chosen):
         for t in candidates:
             if _looks_like_table(t):
@@ -101,19 +95,15 @@ def read_erply_html_bytes(data: bytes) -> pd.DataFrame:
         "V30D_Pesos": pd.to_numeric(raw.iloc[:, 11], errors="coerce").fillna(0),       # L
     })
 
-    # limpiar vacíos y "nan"
     cod = out["Código"].astype(str).str.strip()
     cod_l = cod.str.lower()
     out = out[cod.ne("") & cod_l.ne("nan")]
 
-    # quitar fila de totales (ej. "total ($)")
     out = out[~cod_l.isin(["total ($)", "total($)", "total", "totales"])]
     out = out[~cod_l.str.contains(r"^total\b", regex=True, na=False)]
 
-    # normalizar EAN: si viene "nan"
     out["EAN"] = out["EAN"].replace({"nan": "", "None": "", "NONE": ""})
 
-    # tipos
     out["V30D"] = pd.to_numeric(out["V30D"], errors="coerce").fillna(0)
     out["Stock"] = pd.to_numeric(out["Stock"], errors="coerce").fillna(0)
     out["V30D_Pesos"] = pd.to_numeric(out["V30D_Pesos"], errors="coerce").fillna(0)
@@ -144,7 +134,7 @@ if hist_file is None or erply_file is None:
     st.stop()
 
 # =========================================================
-# LEER ARCHIVOS (bytes) — evita que Streamlit te muestre viejo
+# LEER ARCHIVOS (bytes)
 # =========================================================
 hist_bytes = hist_file.getvalue()
 erply_bytes = erply_file.getvalue()
@@ -171,7 +161,7 @@ hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 # SOLO 2024-2025 (se deja IGUAL para no cambiar resultados)
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 
-# Tipos más ligeros (acelera groupby/pivot; no cambia valores)
+# Tipos más ligeros
 hist["Mes"] = hist["Mes"].astype("int16", errors="ignore")
 hist["Ventas"] = hist["Ventas"].astype("float32", errors="ignore")
 
@@ -194,7 +184,6 @@ p = g.pivot_table(
     fill_value=0
 ).reset_index()
 
-# asegurar columnas 1..12
 for m in range(1, 13):
     if m not in p.columns:
         p[m] = 0
@@ -209,7 +198,6 @@ final = vs.merge(max_mes_df, on="Código", how="left")
 
 # =========================================================
 # NOMBRE: manda Erply; fallback histórico; si no hay "(sin nombre)"
-# (misma lógica, sin columna temporal extra)
 # =========================================================
 final["Nombre"] = final["Nombre"].astype(str).fillna("").str.strip()
 if "Nombre_hist" not in final.columns:
@@ -269,7 +257,7 @@ final.loc[mask_fallback, "Demanda30"] = final.loc[mask_fallback, "V30D"]
 final["Compra_sugerida"] = np.ceil(final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
 
 # =========================================================
-# TABLA FINAL (misma información / mismas columnas)
+# TABLA FINAL (misma info)
 # =========================================================
 tabla = final[
     ["Código", "EAN", "Nombre", "Compra_sugerida", "Stock", "V30D", col_act, col_sig, "Demanda30"]
@@ -278,35 +266,39 @@ tabla = final[
     col_act: f"MaxMes_{mes_actual:02d}",
     col_sig: f"MaxMes_{mes_siguiente:02d}",
 })
-
-# Demanda30 “mostrar” redondeada (igual que antes, solo al final)
 tabla["Demanda30"] = np.round(tabla["Demanda30"], 0).astype(int)
 
 # =========================================================
-# MÉTRICA 4: VENTAS ENERO (HISTÓRICO)
-# Nota: asumo que hist["Ventas"] es el “importe” que quieres.
-# Prioridad: Enero del año actual si existe; si no, Enero más reciente disponible.
+# HELPERS MÉTRICAS IMPORTE POR MES (HISTÓRICO)
+# Prioridad: año actual si existe; si no, el más reciente disponible para ese mes.
 # =========================================================
-jan_current = hist[(hist["Año"] == hoy.year) & (hist["Mes"] == 1)]["Ventas"].sum()
+def _importe_mes(hist_df: pd.DataFrame, mes: int, prefer_year: int) -> float:
+    s_prefer = hist_df[(hist_df["Año"] == prefer_year) & (hist_df["Mes"] == mes)]["Ventas"].sum()
+    if s_prefer > 0:
+        return float(s_prefer)
 
-if jan_current > 0:
-    ventas_enero_importe = float(jan_current)
-else:
-    years_with_jan = hist.loc[hist["Mes"] == 1, "Año"].dropna()
-    if len(years_with_jan) > 0:
-        y_last = int(years_with_jan.max())
-        ventas_enero_importe = float(hist[(hist["Año"] == y_last) & (hist["Mes"] == 1)]["Ventas"].sum())
-    else:
-        ventas_enero_importe = 0.0
+    years = hist_df.loc[hist_df["Mes"] == mes, "Año"].dropna()
+    if len(years) == 0:
+        return 0.0
+    y_last = int(years.max())
+    return float(hist_df[(hist_df["Año"] == y_last) & (hist_df["Mes"] == mes)]["Ventas"].sum())
+
+# Ventas Enero (histórico) sin decimales
+ventas_enero_importe = _importe_mes(hist, 1, hoy.year)
+
+# También mostrar importes de los 2 meses usados para la compra (mes actual y mes siguiente)
+ventas_mes_actual_importe = _importe_mes(hist, mes_actual, hoy.year)
+ventas_mes_siguiente_importe = _importe_mes(hist, mes_siguiente, hoy.year)
 
 # =========================================================
-# UI (MÉTRICAS)
+# UI (MÉTRICAS) — quitamos Suma Stock
 # =========================================================
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("SKUs Erply", f"{tabla['Código'].nunique():,}")
-m2.metric("Suma Stock", f"{tabla['Stock'].sum():,.0f}")
-m3.metric("Suma V30D (info)", f"{vs['V30D_Pesos'].sum():,.0f}")
-m4.metric("Ventas Enero (histórico)", f"${ventas_enero_importe:,.2f}")
+m2.metric("Suma V30D (info)", f"{vs['V30D_Pesos'].sum():,.0f}")
+m3.metric(f"Ventas Mes {mes_actual:02d} (hist)", f"${ventas_mes_actual_importe:,.0f}")
+m4.metric(f"Ventas Mes {mes_siguiente:02d} (hist)", f"${ventas_mes_siguiente_importe:,.0f}")
+m5.metric("Ventas Enero (hist)", f"${ventas_enero_importe:,.0f}")
 
 # =========================================================
 # UI (TABLA)
@@ -326,4 +318,3 @@ st.download_button(
     file_name="compra_sugerida_30d_ponderada.csv",
     mime="text/csv"
 )
-
