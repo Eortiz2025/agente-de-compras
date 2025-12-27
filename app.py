@@ -8,123 +8,103 @@ st.set_page_config(page_title="MaxEne/MaxFeb + V30D", layout="wide")
 st.divider()
 st.header("Unión: Histórico (MaxEne/MaxFeb) + V30D + Stock")
 
-# -------------------------
-# Helpers para Erply .xls (HTML disfrazado)
-# -------------------------
-def _looks_like_erply_table(df: pd.DataFrame) -> bool:
-    """
-    Heurística: buscamos que existan columnas suficientes
-    y que en alguna fila haya:
-    - B: código (alfa-num con guión)
-    - D: nombre (texto)
-    """
-    if df is None or df.empty or df.shape[1] < 8:
+# =========================================================
+# Lector Erply .xls (HTML disfrazado) usando columnas por posición:
+# B = Código (idx 1)
+# D = Nombre (idx 3)
+# E = V30D  (idx 4)   <-- CAMBIO AQUÍ
+# G = Stock (idx 6)
+# =========================================================
+def _looks_like_table(df: pd.DataFrame) -> bool:
+    if df is None or df.empty or df.shape[1] < 7:
         return False
 
     def is_code(x):
         s = str(x).strip()
         return bool(re.match(r"^[A-Za-z0-9\-]+$", s)) and len(s) >= 3 and "codigo" not in s.lower()
 
-    # revisar primeras filas
     for i in range(min(80, len(df))):
-        cB = df.iloc[i, 1] if df.shape[1] > 1 else None  # B
-        cD = df.iloc[i, 3] if df.shape[1] > 3 else None  # D
+        cB = df.iloc[i, 1] if df.shape[1] > 1 else None
+        cD = df.iloc[i, 3] if df.shape[1] > 3 else None
         if is_code(cB) and isinstance(cD, str) and len(cD.strip()) > 2 and "nombre" not in cD.lower():
             return True
     return False
 
 def _detect_data_start(df: pd.DataFrame) -> int:
-    """Encuentra la fila real donde empiezan los datos (B=código, D=nombre)."""
     def is_code(x):
         s = str(x).strip()
         return bool(re.match(r"^[A-Za-z0-9\-]+$", s)) and len(s) >= 3 and "codigo" not in s.lower()
 
-    for i in range(min(160, len(df))):
+    for i in range(min(200, len(df))):
         cB = df.iloc[i, 1] if df.shape[1] > 1 else None
         cD = df.iloc[i, 3] if df.shape[1] > 3 else None
         if is_code(cB) and isinstance(cD, str) and len(str(cD).strip()) > 2 and "nombre" not in str(cD).lower():
             return i
     return 0
 
-def _read_erply_xls_like_html(uploaded) -> pd.DataFrame:
+def _read_erply_html_table(uploaded) -> pd.DataFrame:
     """
-    Lee el .xls exportado por Erply (en realidad HTML).
-    Maneja:
-    - Streamlit UploadedFile (bytes)
-    - HTML con varias tablas: elige la tabla que parece catálogo
+    Lee el .xls de Erply (HTML) desde bytes.
+    Si hay varias tablas, detecta la correcta.
     """
     data = uploaded.getvalue()
-
-    # read_html devuelve lista de tablas
     tables = pd.read_html(io.BytesIO(data), header=None)
 
-    # elegir tabla correcta
     chosen = None
     for t in tables:
-        if _looks_like_erply_table(t):
+        if _looks_like_table(t):
             chosen = t
             break
-
     if chosen is None:
-        # si ninguna tabla pasa heurística, usa la primera pero probablemente falle luego
         chosen = tables[0]
 
     start = _detect_data_start(chosen)
 
-    # Tomamos hasta 12 columnas por si vienen las clásicas
+    # tomar suficientes columnas para llegar a G (idx 6)
     df = chosen.iloc[start:, :12].copy()
-
-    # Si vinieron menos columnas, rellenamos para asignar nombres sin reventar
-    while df.shape[1] < 12:
-        df[df.shape[1]] = None
-
-    df.columns = [
-        "No", "Código", "Código EAN", "Nombre",
-        "Stock (total)", "Stock (apartado)", "Stock (disponible)",
-        "Proveedor",
-        "V30D", "Ventas corto ($)",
-        "V365", "Ventas 365 ($)"
-    ]
-
     return df.dropna(how="all").reset_index(drop=True)
 
 def read_v30_stock(uploaded) -> pd.DataFrame:
     """
-    Lee V30D+Stock:
-    - .csv
-    - .xlsx
-    - .xls HTML de Erply (preferido)
-    - .xls real binario (xlrd)
-    Devuelve SIEMPRE: Código, Nombre (puede venir vacío), V30D, Stock
+    Devuelve SIEMPRE df estándar: Código, Nombre, V30D, Stock
+    Soporta:
+    - CSV
+    - XLSX
+    - XLS HTML de Erply (preferido)
+    - XLS binario real (xlrd)
     """
     name = uploaded.name.lower()
 
     if name.endswith(".csv"):
-        df = pd.read_csv(uploaded)
-        return df
+        return pd.read_csv(uploaded)
 
     if name.endswith(".xlsx"):
-        df = pd.read_excel(uploaded, engine="openpyxl")
-        return df
+        return pd.read_excel(uploaded, engine="openpyxl")
 
     if name.endswith(".xls"):
-        # 1) HTML-Erply
+        # 1) Intentar como HTML (Erply)
         try:
-            t = _read_erply_xls_like_html(uploaded)
+            raw = _read_erply_html_table(uploaded)
 
-            # IMPORTANTE: stock en tu caso es columna G = Stock (disponible)
+            # Posiciones según tu export:
+            # B=1 Código, D=3 Nombre, E=4 V30D, G=6 Stock
             out = pd.DataFrame({
-                "Código": t["Código"].astype(str).str.strip(),
-                "Nombre": t["Nombre"].astype(str).fillna(""),
-                "V30D": pd.to_numeric(t["V30D"], errors="coerce").fillna(0),
-                "Stock": pd.to_numeric(t["Stock (disponible)"], errors="coerce").fillna(0),
+                "Código": raw.iloc[:, 1].astype(str).str.strip(),
+                "Nombre": raw.iloc[:, 3].astype(str).fillna(""),
+                "V30D": pd.to_numeric(raw.iloc[:, 4], errors="coerce").fillna(0),   # <-- E
+                "Stock": pd.to_numeric(raw.iloc[:, 6], errors="coerce").fillna(0),  # <-- G
             })
-            return out
+
+            # Limpiar filas basura (sin código)
+            out = out[out["Código"].astype(str).str.strip() != ""]
+            out = out[out["Código"].astype(str).str.lower() != "nan"]
+
+            return out.reset_index(drop=True)
+
         except Exception:
-            # 2) XLS binario real
+            # 2) Si fuera XLS real binario
             uploaded.seek(0)
-            df = pd.read_excel(uploaded, engine="xlrd")
-            return df
+            return pd.read_excel(uploaded, engine="xlrd")
 
     raise ValueError("Formato de V30D+Stock no soportado (usa .xlsx, .csv o .xls).")
 
@@ -201,19 +181,14 @@ max_df = out[["Código", "Nombre", "MaxEne", "MaxFeb"]].copy()
 max_df = max_df.rename(columns={"Nombre": "Nombre_hist"})
 
 # -------------------------
-# Leer V30D + Stock y normalizar
+# Leer V30D + Stock
 # -------------------------
 try:
     vs = read_v30_stock(v30_file)
 except Exception as e:
-    st.error(
-        "No pude leer el archivo V30D+Stock.\n"
-        f"Error: {e}"
-    )
+    st.error(f"No pude leer el archivo V30D+Stock. Error: {e}")
     st.stop()
 
-# Si el archivo viene “normal” pero con otros nombres, aquí tronaría.
-# En tu caso Erply ya regresa Código/Nombre/V30D/Stock.
 req_vs = {"Código", "V30D", "Stock"}
 missing2 = req_vs - set(vs.columns)
 if missing2:
@@ -238,12 +213,10 @@ vs["Nombre"] = vs["Nombre"].astype(str).fillna("")
 # -------------------------
 final = vs.merge(max_df, on="Código", how="left")
 
-# Asegurar columnas
 if "Nombre_hist" not in final.columns:
     final["Nombre_hist"] = ""
 final["Nombre_hist"] = final["Nombre_hist"].astype(str).fillna("")
 
-# Nombre final: si vs trae Nombre úsalo; si no, usa el del histórico
 nombre_vs = final["Nombre"].astype(str).fillna("").str.strip()
 nombre_hist = final["Nombre_hist"].astype(str).fillna("").str.strip()
 final["Nombre_final"] = nombre_vs.where(nombre_vs != "", nombre_hist).fillna("")
