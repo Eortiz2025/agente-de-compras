@@ -1,295 +1,113 @@
 # app.py
-# Streamlit app: Compra sugerida 30 días (Ene/Feb máx + V30D)
-# Reglas:
-# 1) Ene_max y Feb_max (máximo histórico por mes)
-# 2) Demanda_hist = wEne*Ene_max + wFeb*Feb_max  (default 90/10)
-# 3) Integrar V30D: Demanda_final = (1-α)*Demanda_hist + α*V30D  (α default 0.30)
-# 4) (Opcional) Cap de V30D: V30D_cap ∈ [cap_low*Demanda_hist, cap_high*Demanda_hist]
-# 5) Compra = max(0, Demanda_final - Stock)
+# Streamlit: lee histórico y calcula ventas de Enero 2024 vs Enero 2025 (unidades e importe)
 
-import io
 import pandas as pd
-import numpy as np
 import streamlit as st
-from datetime import date, timedelta
 
-st.set_page_config(page_title="Compra sugerida 30 días", layout="wide")
-st.title("Compra sugerida (30 días) — Ene/Feb Máx + V30D")
+st.set_page_config(page_title="Ventas Enero 2024 vs 2025", layout="wide")
+st.title("Histórico — Ventas Enero 2024 vs Enero 2025")
 
-# -------------------------
-# Helpers
-# -------------------------
-def norm_code(x) -> str:
-    if pd.isna(x):
-        return ""
-    return str(x).strip()
-
-def compute_weights_real_days(op_date: date, horizon_days: int = 30):
-    """
-    Calcula pesos por días reales por mes en la ventana [op_date, op_date + horizon_days).
-    Devuelve dict {(year, month): weight}
-    """
-    start = op_date
-    end = op_date + timedelta(days=horizon_days)
-    total = (end - start).days
-    cur = start
-    counts = {}
-    while cur < end:
-        key = (cur.year, cur.month)
-        counts[key] = counts.get(key, 0) + 1
-        cur += timedelta(days=1)
-    weights = {k: v / total for k, v in counts.items()}
-    return weights
-
-def excel_bytes(df: pd.DataFrame, sheet_name="Compra"):
-    bio = io.BytesIO()
-    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_name)
-    bio.seek(0)
-    return bio.getvalue()
-
-# -------------------------
-# Inputs
-# -------------------------
-st.sidebar.header("1) Cargar archivos (obligatorio)")
-
+st.sidebar.header("1) Cargar histórico")
 hist_file = st.sidebar.file_uploader(
-    "Histórico 24+ meses (Excel) — columnas: Código, Nombre, Mes, Ventas",
-    type=["xlsx", "xls"]
+    "Sube tu archivo histórico (.xlsx) con columnas: Código, Nombre, Año, Mes, Ventas, Importe",
+    type=["xlsx"]
 )
-
-v30_stock_file = st.sidebar.file_uploader(
-    "V30D + Stock (Excel/CSV) — columnas: Código, V30D, Stock (Nombre opcional)",
-    type=["xlsx", "xls", "csv"]
-)
-
-# FORZAR: siempre ambos
-if hist_file is None or v30_stock_file is None:
-    st.warning("Debes subir **AMBOS archivos**: Histórico 24m y V30D + Stock.")
-    st.stop()
 
 st.sidebar.header("2) Parámetros")
+mes = st.sidebar.selectbox("Mes", options=list(range(1, 13)), index=0)  # 1 = Enero
+anio_a = st.sidebar.number_input("Año A", min_value=2000, max_value=2100, value=2024, step=1)
+anio_b = st.sidebar.number_input("Año B", min_value=2000, max_value=2100, value=2025, step=1)
 
-use_real_day_weights = st.sidebar.checkbox(
-    "Usar pesos por días reales (si cambias la fecha/horizonte)",
-    value=False
-)
-
-op_date = st.sidebar.date_input("Fecha de operación", value=date.today())
-horizon_days = st.sidebar.number_input("Horizonte (días)", min_value=7, max_value=90, value=30, step=1)
-
-if use_real_day_weights:
-    wmap = compute_weights_real_days(op_date, int(horizon_days))
-else:
-    # Regla fija tradicional: 90% enero / 10% febrero
-    wmap = {(op_date.year, 1): 0.90, (op_date.year, 2): 0.10}
-
-alpha_default = st.sidebar.slider("α default (peso V30D)", 0.0, 1.0, 0.30, 0.05)
-
-use_v30_cap = st.sidebar.checkbox(
-    "Aplicar freno a V30D (cap vs demanda histórica)",
-    value=True
-)
-
-cap_low = st.sidebar.slider("Cap inferior (x Demanda_hist)", 0.30, 1.00, 0.70, 0.05)
-cap_high = st.sidebar.slider("Cap superior (x Demanda_hist)", 1.00, 2.00, 1.30, 0.05)
-
-st.sidebar.header("3) Overrides de α (opcional)")
-
-critical_skus = st.sidebar.text_area(
-    "SKUs críticos (α=0.40) — uno por línea",
-    value=""
-).strip().splitlines()
-
-slow_skus = st.sidebar.text_area(
-    "SKUs lentos/intermitentes (α=0.15) — uno por línea",
-    value=""
-).strip().splitlines()
-
-alpha_critical = 0.40
-alpha_slow = 0.15
-
-critical_set = set(map(norm_code, critical_skus)) if critical_skus != [""] else set()
-slow_set = set(map(norm_code, slow_skus)) if slow_skus != [""] else set()
+if hist_file is None:
+    st.info("Sube el archivo histórico para continuar.")
+    st.stop()
 
 # -------------------------
-# Load files
+# Leer y validar
 # -------------------------
-# Histórico
-hist = pd.read_excel(hist_file) if hist_file.name.lower().endswith(("xlsx", "xls")) else pd.read_csv(hist_file)
+try:
+    df = pd.read_excel(hist_file)
+except Exception as e:
+    st.error(f"No pude leer el Excel. Error: {e}")
+    st.stop()
 
-need_hist_cols = {"Código", "Nombre", "Mes", "Ventas"}
-missing = need_hist_cols - set(hist.columns)
+required = {"Código", "Nombre", "Año", "Mes", "Ventas"}
+optional_importe = "Importe"
+
+missing = required - set(df.columns)
 if missing:
-    st.error(f"Histórico: faltan columnas: {sorted(missing)}")
+    st.error(f"Faltan columnas en el archivo: {sorted(missing)}")
     st.stop()
 
-hist = hist.copy()
-hist["Código"] = hist["Código"].map(norm_code)
-hist["Nombre"] = hist["Nombre"].astype(str)
-hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce").astype("Int64")
-hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
+# Normalización / tipos
+df = df.copy()
+df["Código"] = df["Código"].astype(str).str.strip()
+df["Nombre"] = df["Nombre"].astype(str).fillna("")
+df["Año"] = pd.to_numeric(df["Año"], errors="coerce")
+df["Mes"] = pd.to_numeric(df["Mes"], errors="coerce")
+df["Ventas"] = pd.to_numeric(df["Ventas"], errors="coerce").fillna(0)
 
-# V30D + Stock
-if v30_stock_file.name.lower().endswith(("xlsx", "xls")):
-    vs = pd.read_excel(v30_stock_file)
-else:
-    vs = pd.read_csv(v30_stock_file)
-
-need_vs_cols = {"Código", "V30D", "Stock"}
-missing2 = need_vs_cols - set(vs.columns)
-if missing2:
-    st.error(f"V30D+Stock: faltan columnas: {sorted(missing2)}")
-    st.stop()
-
-vs = vs.copy()
-vs["Código"] = vs["Código"].map(norm_code)
-vs["V30D"] = pd.to_numeric(vs["V30D"], errors="coerce").fillna(0)
-vs["Stock"] = pd.to_numeric(vs["Stock"], errors="coerce").fillna(0)
-
-if "Nombre" not in vs.columns:
-    vs["Nombre"] = ""
+has_importe = optional_importe in df.columns
+if has_importe:
+    df["Importe"] = pd.to_numeric(df["Importe"], errors="coerce").fillna(0)
 
 # -------------------------
 # Cálculos
 # -------------------------
-# 1) Máximos por mes (Ene y Feb) por SKU
-ene_max = (
-    hist.loc[hist["Mes"] == 1]
-    .groupby(["Código"], as_index=False)["Ventas"].max()
-    .rename(columns={"Ventas": "Ene_max"})
-)
+def resumen(yy: int):
+    sub = df[(df["Año"] == yy) & (df["Mes"] == mes)]
+    unidades = float(sub["Ventas"].sum())
+    importe = float(sub["Importe"].sum()) if has_importe else None
+    skus = int(sub["Código"].nunique())
+    renglones = int(len(sub))
+    return unidades, importe, skus, renglones, sub
 
-feb_max = (
-    hist.loc[hist["Mes"] == 2]
-    .groupby(["Código"], as_index=False)["Ventas"].max()
-    .rename(columns={"Ventas": "Feb_max"})
-)
+u_a, imp_a, skus_a, rows_a, sub_a = resumen(int(anio_a))
+u_b, imp_b, skus_b, rows_b, sub_b = resumen(int(anio_b))
 
-# Nombre canónico por SKU (del histórico)
-name_map = (
-    hist.groupby("Código", as_index=False)["Nombre"]
-    .agg(lambda s: s.dropna().iloc[0] if len(s.dropna()) else "")
-    .rename(columns={"Nombre": "Nombre_hist"})
-)
+delta_u = u_b - u_a
+pct_u = (delta_u / u_a * 100.0) if u_a != 0 else None
 
-base = (
-    vs.merge(name_map, on="Código", how="left")
-      .merge(ene_max, on="Código", how="left")
-      .merge(feb_max, on="Código", how="left")
-)
-
-base["Ene_max"] = base["Ene_max"].fillna(0)
-base["Feb_max"] = base["Feb_max"].fillna(0)
-
-# Resolver nombre final: si vs trae Nombre, úsalo; si no, usa histórico
-base["Nombre_final"] = base["Nombre"].where(base["Nombre"].astype(str).str.strip() != "", base["Nombre_hist"])
-base["Nombre_final"] = base["Nombre_final"].fillna("")
-
-# 2) Pesos (Ene/Feb)
-if use_real_day_weights:
-    w_ene = 0.0
-    w_feb = 0.0
-    for (yy, mm), w in wmap.items():
-        if mm == 1:
-            w_ene += w
-        elif mm == 2:
-            w_feb += w
-    if (sum(wmap.values()) > 0) and (w_ene + w_feb < 0.999):
-        st.warning(
-            "La ventana de días reales toca meses fuera de Ene/Feb. "
-            "En este modelo (Ene/Feb) esos días se ignoran. "
-            "Si quieres, ampliamos el modelo a 12 meses."
-        )
-    base["wEne"] = w_ene
-    base["wFeb"] = w_feb
-else:
-    base["wEne"] = 0.90
-    base["wFeb"] = 0.10
-
-base["Demanda_hist"] = (base["wEne"] * base["Ene_max"] + base["wFeb"] * base["Feb_max"])
-
-# 3) α por SKU
-def alpha_for_sku(code: str) -> float:
-    if code in critical_set:
-        return alpha_critical
-    if code in slow_set:
-        return alpha_slow
-    return alpha_default
-
-base["alpha"] = base["Código"].apply(alpha_for_sku)
-
-# 4) V30D con cap opcional
-if use_v30_cap:
-    low = cap_low * base["Demanda_hist"]
-    high = cap_high * base["Demanda_hist"]
-    base["V30D_cap"] = base["V30D"].clip(lower=low, upper=high)
-else:
-    base["V30D_cap"] = base["V30D"]
-
-# 5) Demanda final + Compra
-base["Demanda_final"] = (1 - base["alpha"]) * base["Demanda_hist"] + base["alpha"] * base["V30D_cap"]
-
-# Redondeos (para mostrar)
-base["Demanda_hist_r"] = base["Demanda_hist"].round().astype(int)
-base["Demanda_final_r"] = base["Demanda_final"].round().astype(int)
-
-# Compra (entera)
-base["Compra"] = (base["Demanda_final_r"] - base["Stock"]).clip(lower=0).round().astype(int)
-
-# Output: solo compra > 0
-compra_df = base.loc[base["Compra"] > 0, [
-    "Código",
-    "Nombre_final",
-    "Stock",
-    "V30D",
-    "Ene_max",
-    "Feb_max",
-    "wEne",
-    "wFeb",
-    "Demanda_hist_r",
-    "alpha",
-    "V30D_cap",
-    "Demanda_final_r",
-    "Compra"
-]].rename(columns={
-    "Nombre_final": "Nombre",
-    "Demanda_hist_r": "Demanda_hist",
-    "Demanda_final_r": "Demanda_final"
-}).sort_values(["Compra", "Demanda_final"], ascending=[False, False])
+if has_importe:
+    delta_imp = imp_b - imp_a
+    pct_imp = (delta_imp / imp_a * 100.0) if imp_a != 0 else None
 
 # -------------------------
 # UI
 # -------------------------
+st.subheader(f"Resumen Mes {mes}: {int(anio_a)} vs {int(anio_b)}")
+
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("SKUs en V30D+Stock", len(vs))
-c2.metric("SKUs con compra > 0", len(compra_df))
-c3.metric("Unidades a comprar (total)", int(compra_df["Compra"].sum()) if len(compra_df) else 0)
-c4.metric("α default", alpha_default)
+c1.metric(f"Unidades {int(anio_a)}", f"{u_a:,.0f}")
+c2.metric(f"Unidades {int(anio_b)}", f"{u_b:,.0f}", f"{delta_u:,.0f}" + (f" ({pct_u:.2f}%)" if pct_u is not None else ""))
 
-st.subheader("Compra sugerida (solo Compra > 0)")
-st.dataframe(compra_df, use_container_width=True, height=520)
+if has_importe:
+    c3.metric(f"Importe {int(anio_a)}", f"{imp_a:,.2f}")
+    c4.metric(f"Importe {int(anio_b)}", f"{imp_b:,.2f}", f"{delta_imp:,.2f}" + (f" ({pct_imp:.2f}%)" if pct_imp is not None else ""))
+else:
+    c3.metric(f"SKUs {int(anio_a)}", f"{skus_a:,}")
+    c4.metric(f"SKUs {int(anio_b)}", f"{skus_b:,}")
 
-st.subheader("Descargar")
-fname = f"Compra_sugerida_{op_date.isoformat()}_{int(horizon_days)}d.xlsx"
-st.download_button(
-    "Descargar Excel",
-    data=excel_bytes(compra_df, sheet_name="Compra"),
-    file_name=fname,
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+st.caption(f"Renglones: {int(anio_a)}={rows_a:,} | {int(anio_b)}={rows_b:,} | SKUs únicos: {int(anio_a)}={skus_a:,} | {int(anio_b)}={skus_b:,}")
 
-with st.expander("Ver reglas activas"):
-    st.write({
-        "Fecha_operación": str(op_date),
-        "Horizonte_días": int(horizon_days),
-        "Pesos": "Días reales" if use_real_day_weights else "Fijo 90% Ene / 10% Feb",
-        "Cap_V30D": use_v30_cap,
-        "Cap_low": cap_low if use_v30_cap else None,
-        "Cap_high": cap_high if use_v30_cap else None,
-        "alpha_default": alpha_default,
-        "alpha_critical": alpha_critical,
-        "alpha_slow": alpha_slow,
-        "SKUs_críticos": len(critical_set),
-        "SKUs_lentos": len(slow_set),
-    })
+# Top por SKU para explicar diferencia
+st.subheader("Top SKUs por unidades (mes seleccionado)")
+
+agg_cols = ["Código", "Nombre"]
+a_units = sub_a.groupby(agg_cols, as_index=False)["Ventas"].sum().rename(columns={"Ventas": f"Unidades_{int(anio_a)}"})
+b_units = sub_b.groupby(agg_cols, as_index=False)["Ventas"].sum().rename(columns={"Ventas": f"Unidades_{int(anio_b)}"})
+
+top = a_units.merge(b_units, on=agg_cols, how="outer").fillna(0)
+top["Delta_unidades"] = top[f"Unidades_{int(anio_b)}"] - top[f"Unidades_{int(anio_a)}"]
+top = top.sort_values("Delta_unidades", ascending=False)
+
+st.write("**Suben más (Top 20):**")
+st.dataframe(top.head(20), use_container_width=True, height=360)
+
+st.write("**Bajan más (Top 20):**")
+st.dataframe(top.sort_values("Delta_unidades", ascending=True).head(20), use_container_width=True, height=360)
+
+# Export opcional
+st.subheader("Descargar tabla comparativa (por SKU)")
+csv = top.to_csv(index=False).encode("utf-8-sig")
+st.download_button("Descargar CSV", data=csv, file_name=f"comparativo_mes{mes}_{int(anio_a)}_{int(anio_b)}.csv", mime="text/csv")
