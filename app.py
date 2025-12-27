@@ -4,7 +4,7 @@
 # 1) Ene_max y Feb_max (máximo histórico por mes)
 # 2) Demanda_hist = wEne*Ene_max + wFeb*Feb_max  (default 90/10)
 # 3) Integrar V30D: Demanda_final = (1-α)*Demanda_hist + α*V30D  (α default 0.30)
-# 4) (Opcional) Cap de V30D: V30D_cap ∈ [0.70*Demanda_hist, 1.30*Demanda_hist]
+# 4) (Opcional) Cap de V30D: V30D_cap ∈ [cap_low*Demanda_hist, cap_high*Demanda_hist]
 # 5) Compra = max(0, Demanda_final - Stock)
 
 import io
@@ -14,7 +14,6 @@ import streamlit as st
 from datetime import date, timedelta
 
 st.set_page_config(page_title="Compra sugerida 30 días", layout="wide")
-
 st.title("Compra sugerida (30 días) — Ene/Feb Máx + V30D")
 
 # -------------------------
@@ -52,43 +51,51 @@ def excel_bytes(df: pd.DataFrame, sheet_name="Compra"):
 # -------------------------
 # Inputs
 # -------------------------
-st.sidebar.header("1) Cargar archivos")
+st.sidebar.header("1) Cargar archivos (obligatorio)")
 
 hist_file = st.sidebar.file_uploader(
-    "Histórico 24+ meses (Excel) — debe incluir columnas: Código, Nombre, Mes, Ventas",
+    "Histórico 24+ meses (Excel) — columnas: Código, Nombre, Mes, Ventas",
     type=["xlsx", "xls"]
 )
 
 v30_stock_file = st.sidebar.file_uploader(
-    "V30D + Stock (Excel/CSV) — columnas mínimas: Código, V30D, Stock (Nombre opcional)",
+    "V30D + Stock (Excel/CSV) — columnas: Código, V30D, Stock (Nombre opcional)",
     type=["xlsx", "xls", "csv"]
 )
 
+# FORZAR: siempre ambos
+if hist_file is None or v30_stock_file is None:
+    st.warning("Debes subir **AMBOS archivos**: Histórico 24m y V30D + Stock.")
+    st.stop()
+
 st.sidebar.header("2) Parámetros")
 
-use_real_day_weights = st.sidebar.checkbox("Usar pesos por días reales (recomendado si cambias la fecha)", value=False)
+use_real_day_weights = st.sidebar.checkbox(
+    "Usar pesos por días reales (si cambias la fecha/horizonte)",
+    value=False
+)
 
 op_date = st.sidebar.date_input("Fecha de operación", value=date.today())
 horizon_days = st.sidebar.number_input("Horizonte (días)", min_value=7, max_value=90, value=30, step=1)
 
 if use_real_day_weights:
     wmap = compute_weights_real_days(op_date, int(horizon_days))
-    # Para tu regla original (Ene/Feb), nos quedamos con pesos de los meses tocados.
-    # Si atraviesa más de 2 meses, se usa la distribución real.
 else:
-    # Regla fija validada: 90% enero / 10% febrero
-    # (Esto es "modo libreta/ene-feb" tradicional; si el cálculo cae en otro mes,
-    # puedes activar pesos reales arriba.)
+    # Regla fija tradicional: 90% enero / 10% febrero
     wmap = {(op_date.year, 1): 0.90, (op_date.year, 2): 0.10}
 
 alpha_default = st.sidebar.slider("α default (peso V30D)", 0.0, 1.0, 0.30, 0.05)
 
-use_v30_cap = st.sidebar.checkbox("Aplicar freno a V30D (cap 0.70x–1.30x vs demanda histórica)", value=True)
+use_v30_cap = st.sidebar.checkbox(
+    "Aplicar freno a V30D (cap vs demanda histórica)",
+    value=True
+)
 
 cap_low = st.sidebar.slider("Cap inferior (x Demanda_hist)", 0.30, 1.00, 0.70, 0.05)
 cap_high = st.sidebar.slider("Cap superior (x Demanda_hist)", 1.00, 2.00, 1.30, 0.05)
 
 st.sidebar.header("3) Overrides de α (opcional)")
+
 critical_skus = st.sidebar.text_area(
     "SKUs críticos (α=0.40) — uno por línea",
     value=""
@@ -106,14 +113,11 @@ critical_set = set(map(norm_code, critical_skus)) if critical_skus != [""] else 
 slow_set = set(map(norm_code, slow_skus)) if slow_skus != [""] else set()
 
 # -------------------------
-# Main logic
+# Load files
 # -------------------------
-if not hist_file or not v30_stock_file:
-    st.info("Carga el **Histórico** y el archivo de **V30D + Stock** para calcular la compra.")
-    st.stop()
-
-# Load historical
+# Histórico
 hist = pd.read_excel(hist_file) if hist_file.name.lower().endswith(("xlsx", "xls")) else pd.read_csv(hist_file)
+
 need_hist_cols = {"Código", "Nombre", "Mes", "Ventas"}
 missing = need_hist_cols - set(hist.columns)
 if missing:
@@ -126,7 +130,7 @@ hist["Nombre"] = hist["Nombre"].astype(str)
 hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce").astype("Int64")
 hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 
-# Load V30D + Stock
+# V30D + Stock
 if v30_stock_file.name.lower().endswith(("xlsx", "xls")):
     vs = pd.read_excel(v30_stock_file)
 else:
@@ -143,10 +147,12 @@ vs["Código"] = vs["Código"].map(norm_code)
 vs["V30D"] = pd.to_numeric(vs["V30D"], errors="coerce").fillna(0)
 vs["Stock"] = pd.to_numeric(vs["Stock"], errors="coerce").fillna(0)
 
-# En caso de que venga "Nombre" en vs, úsalo; si no, se toma del histórico.
 if "Nombre" not in vs.columns:
     vs["Nombre"] = ""
 
+# -------------------------
+# Cálculos
+# -------------------------
 # 1) Máximos por mes (Ene y Feb) por SKU
 ene_max = (
     hist.loc[hist["Mes"] == 1]
@@ -160,7 +166,7 @@ feb_max = (
     .rename(columns={"Ventas": "Feb_max"})
 )
 
-# Nombre “canónico” por SKU desde histórico (último no importa, solo para etiqueta)
+# Nombre canónico por SKU (del histórico)
 name_map = (
     hist.groupby("Código", as_index=False)["Nombre"]
     .agg(lambda s: s.dropna().iloc[0] if len(s.dropna()) else "")
@@ -176,17 +182,12 @@ base = (
 base["Ene_max"] = base["Ene_max"].fillna(0)
 base["Feb_max"] = base["Feb_max"].fillna(0)
 
-# Resolver nombre final
+# Resolver nombre final: si vs trae Nombre, úsalo; si no, usa histórico
 base["Nombre_final"] = base["Nombre"].where(base["Nombre"].astype(str).str.strip() != "", base["Nombre_hist"])
 base["Nombre_final"] = base["Nombre_final"].fillna("")
 
-# 2) Demanda histórica
-# Si el usuario activa pesos reales, se usan los meses involucrados en la ventana.
+# 2) Pesos (Ene/Feb)
 if use_real_day_weights:
-    # Calcula demanda como suma (peso_mes * max_mes) para los meses tocados.
-    # Para meses distintos a Ene/Feb, el max mensual no está calculado aquí.
-    # Entonces: en modo pesos reales, solo aplicamos a Ene/Feb si la ventana toca esos meses;
-    # si toca otros meses, los ignoramos (peso 0) y avisamos.
     w_ene = 0.0
     w_feb = 0.0
     for (yy, mm), w in wmap.items():
@@ -195,9 +196,11 @@ if use_real_day_weights:
         elif mm == 2:
             w_feb += w
     if (sum(wmap.values()) > 0) and (w_ene + w_feb < 0.999):
-        st.warning("La ventana de días reales toca meses fuera de Ene/Feb. "
-                   "En este modelo (Ene/Feb) esos días se ignoran. "
-                   "Si quieres, ampliamos el modelo a 12 meses.")
+        st.warning(
+            "La ventana de días reales toca meses fuera de Ene/Feb. "
+            "En este modelo (Ene/Feb) esos días se ignoran. "
+            "Si quieres, ampliamos el modelo a 12 meses."
+        )
     base["wEne"] = w_ene
     base["wFeb"] = w_feb
 else:
@@ -227,13 +230,14 @@ else:
 # 5) Demanda final + Compra
 base["Demanda_final"] = (1 - base["alpha"]) * base["Demanda_hist"] + base["alpha"] * base["V30D_cap"]
 
-# Redondeo: unidades enteras
+# Redondeos (para mostrar)
 base["Demanda_hist_r"] = base["Demanda_hist"].round().astype(int)
 base["Demanda_final_r"] = base["Demanda_final"].round().astype(int)
 
+# Compra (entera)
 base["Compra"] = (base["Demanda_final_r"] - base["Stock"]).clip(lower=0).round().astype(int)
 
-# Output: solo compra > 0 (como vienes trabajando)
+# Output: solo compra > 0
 compra_df = base.loc[base["Compra"] > 0, [
     "Código",
     "Nombre_final",
@@ -254,9 +258,11 @@ compra_df = base.loc[base["Compra"] > 0, [
     "Demanda_final_r": "Demanda_final"
 }).sort_values(["Compra", "Demanda_final"], ascending=[False, False])
 
-# KPIs
+# -------------------------
+# UI
+# -------------------------
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("SKUs en archivo V30D+Stock", len(vs))
+c1.metric("SKUs en V30D+Stock", len(vs))
 c2.metric("SKUs con compra > 0", len(compra_df))
 c3.metric("Unidades a comprar (total)", int(compra_df["Compra"].sum()) if len(compra_df) else 0)
 c4.metric("α default", alpha_default)
@@ -264,7 +270,6 @@ c4.metric("α default", alpha_default)
 st.subheader("Compra sugerida (solo Compra > 0)")
 st.dataframe(compra_df, use_container_width=True, height=520)
 
-# Download
 st.subheader("Descargar")
 fname = f"Compra_sugerida_{op_date.isoformat()}_{int(horizon_days)}d.xlsx"
 st.download_button(
