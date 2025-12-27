@@ -59,7 +59,6 @@ def _read_erply_html(uploaded) -> pd.DataFrame:
         chosen = tables[0]
 
     start = _detect_data_start(chosen)
-
     raw = chosen.iloc[start:, :12].copy().reset_index(drop=True)
 
     out = pd.DataFrame({
@@ -126,7 +125,6 @@ hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 
-# Fallback de nombre: el primero no vacío por Código (si existe)
 nombre_hist = (
     hist.loc[hist["Nombre"].ne(""), ["Código", "Nombre"]]
         .drop_duplicates(subset=["Código"], keep="first")
@@ -166,9 +164,7 @@ final = vs.merge(max_mes_df, on="Código", how="left")
 # =========================================================
 # NOMBRE: manda SIEMPRE el de Erply (vigente).
 # Solo si viene vacío, cae al histórico; si no hay, "(sin nombre)".
-#
-# BUG FIX (punto 1): garantizar que Nombre_hist exista como columna
-# y que sea string/llenada con "" para evitar errores silenciosos.
+# BUG FIX: asegurar que Nombre_hist exista como columna válida.
 # =========================================================
 final["Nombre_erply"] = final["Nombre"].astype(str).fillna("").str.strip()
 
@@ -182,7 +178,6 @@ final["Nombre"] = np.where(
     final["Nombre_erply"],
     np.where(final["Nombre_hist"].ne(""), final["Nombre_hist"], "(sin nombre)")
 )
-
 final = final.drop(columns=["Nombre_erply"], errors="ignore")
 
 # =========================================================
@@ -248,14 +243,32 @@ tabla = final[
 })
 
 # =========================================================
-# UI
+# MÉTRICAS
+# - Reemplaza "Suma Compra sugerida" por "Ventas Enero (histórico)"
+# - Usa primero enero del año actual si existe; si no, enero más reciente del histórico
 # =========================================================
+# OJO: aquí se asume que hist["Ventas"] es el "importe" que quieres mostrar.
+jan_current = hist[(hist["Año"] == hoy.year) & (hist["Mes"] == 1)]["Ventas"].sum()
+
+if jan_current > 0:
+    ventas_enero_importe = float(jan_current)
+else:
+    years_with_jan = hist.loc[hist["Mes"] == 1, "Año"].dropna()
+    if len(years_with_jan) > 0:
+        y_last = int(years_with_jan.max())
+        ventas_enero_importe = float(hist[(hist["Año"] == y_last) & (hist["Mes"] == 1)]["Ventas"].sum())
+    else:
+        ventas_enero_importe = 0.0
+
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("SKUs Erply", f"{tabla['Código'].nunique():,}")
 m2.metric("Suma Stock", f"{tabla['Stock'].sum():,.0f}")
 m3.metric("Suma V30D (info)", f"{vs['V30D_Pesos'].sum():,.0f}")
-m4.metric("Suma Compra sugerida", f"{tabla['Compra'].sum():,.0f}")
+m4.metric("Ventas Enero (histórico)", f"${ventas_enero_importe:,.2f}")
 
+# =========================================================
+# UI
+# =========================================================
 st.subheader("Tabla unificada + compra sugerida")
 st.dataframe(
     tabla.sort_values(["Compra", "Demanda30"], ascending=False),
