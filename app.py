@@ -19,8 +19,8 @@ with colL:
 
 with colR:
     v30_file = st.file_uploader(
-        "2) Sube V30D + Stock (.xlsx/.csv) — columnas mínimas: Código, V30D, Stock (Nombre opcional)",
-        type=["xlsx", "csv"]
+        "2) Sube V30D + Stock (.xls/.xlsx/.csv) — columnas mínimas: Código, V30D, Stock (Nombre opcional)",
+        type=["xls", "xlsx", "csv"]
     )
 
 if hist_file is None or v30_file is None:
@@ -79,17 +79,29 @@ out["MaxFeb"] = out[["Max_Feb_2024", "Max_Feb_2025"]].max(axis=1)
 max_df = out[["Código", "Nombre", "MaxEne", "MaxFeb"]].copy()
 
 # -------------------------
-# Leer V30D + Stock y validar
+# Leer V30D + Stock (xls/xlsx/csv) y validar
 # -------------------------
-if v30_file.name.lower().endswith(".xlsx"):
-    vs = pd.read_excel(v30_file)
-else:
-    vs = pd.read_csv(v30_file)
+fname = v30_file.name.lower()
+
+try:
+    if fname.endswith(".xls"):
+        vs = pd.read_excel(v30_file, engine="xlrd")
+    elif fname.endswith(".xlsx"):
+        vs = pd.read_excel(v30_file, engine="openpyxl")
+    else:
+        vs = pd.read_csv(v30_file)
+except Exception as e:
+    st.error(f"No pude leer el archivo V30D+Stock. Error: {e}")
+    st.stop()
 
 req_vs = {"Código", "V30D", "Stock"}
 missing2 = req_vs - set(vs.columns)
 if missing2:
-    st.error(f"V30D+Stock: faltan columnas {sorted(missing2)}")
+    st.error(
+        "V30D+Stock: faltan columnas.\n"
+        f"Faltan: {sorted(missing2)}\n\n"
+        f"Columnas encontradas: {list(vs.columns)}"
+    )
     st.stop()
 
 vs = vs.copy()
@@ -111,10 +123,9 @@ final["Nombre_final"] = final["Nombre"].where(final["Nombre"].astype(str).str.st
 final["Nombre_final"] = final["Nombre_final"].fillna("")
 
 # Si no existe en histórico (SKU nuevo), MaxEne/MaxFeb quedan 0
-final["MaxEne"] = pd.to_numeric(final["MaxEne"], errors="coerce").fillna(0)
-final["MaxFeb"] = pd.to_numeric(final["MaxFeb"], errors="coerce").fillna(0)
+final["MaxEne"] = pd.to_numeric(final.get("MaxEne"), errors="coerce").fillna(0)
+final["MaxFeb"] = pd.to_numeric(final.get("MaxFeb"), errors="coerce").fillna(0)
 
-# Tabla limpia
 tabla = final[["Código", "Nombre_final", "V30D", "Stock", "MaxEne", "MaxFeb"]].rename(
     columns={"Nombre_final": "Nombre"}
 )
@@ -124,7 +135,7 @@ tabla = final[["Código", "Nombre_final", "V30D", "Stock", "MaxEne", "MaxFeb"]].
 # -------------------------
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("SKUs en V30D+Stock", f"{tabla['Código'].nunique():,}")
-c2.metric("SKUs con MaxEne/MaxFeb encontrados", f"{int((tabla['MaxEne'] > 0).sum()):,}")
+c2.metric("SKUs con MaxEne/MaxFeb (match)", f"{int(((tabla['MaxEne'] > 0) | (tabla['MaxFeb'] > 0)).sum()):,}")
 c3.metric("Suma V30D", f"{tabla['V30D'].sum():,.0f}")
 c4.metric("Suma Stock", f"{tabla['Stock'].sum():,.0f}")
 
