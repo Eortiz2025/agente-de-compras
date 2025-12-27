@@ -13,7 +13,7 @@ st.title("Agente de compras")
 # =========================================================
 # LECTURA ERPLY .XLS (HTML) por posiciones:
 # B = Código (idx 1)
-# C = EAN    (idx 2)   <-- NUEVO
+# C = EAN    (idx 2)
 # D = Nombre (idx 3)
 # E = V30D   (idx 4)
 # G = Stock  (idx 6)
@@ -60,12 +60,11 @@ def _read_erply_html(uploaded) -> pd.DataFrame:
 
     start = _detect_data_start(chosen)
 
-    # Tomar columnas suficientes para llegar a L (idx 11)
     raw = chosen.iloc[start:, :12].copy().reset_index(drop=True)
 
     out = pd.DataFrame({
         "Código": raw.iloc[:, 1].astype(str).str.strip(),                              # B
-        "EAN": raw.iloc[:, 2].astype(str).fillna("").str.strip(),                      # C  <-- NUEVO
+        "EAN": raw.iloc[:, 2].astype(str).fillna("").str.strip(),                      # C
         "Nombre": raw.iloc[:, 3].astype(str).fillna("").str.strip(),                   # D
         "V30D": pd.to_numeric(raw.iloc[:, 4], errors="coerce").fillna(0),              # E
         "Stock": pd.to_numeric(raw.iloc[:, 6], errors="coerce").fillna(0),             # G
@@ -76,7 +75,7 @@ def _read_erply_html(uploaded) -> pd.DataFrame:
     out = out[out["Código"].astype(str).str.strip().ne("")]
     out = out[out["Código"].astype(str).str.lower().ne("nan")]
 
-    # QUITAR fila de totales (ej. "total ($)" u otras variantes)
+    # quitar fila de totales (ej. "total ($)")
     cod_l = out["Código"].astype(str).str.strip().str.lower()
     out = out[~cod_l.isin(["total ($)", "total($)", "total", "totales"])]
     out = out[~cod_l.str.contains(r"^total\b", regex=True, na=False)]
@@ -107,8 +106,8 @@ if hist_file is None or erply_file is None:
 
 # =========================================================
 # LEER HISTÓRICO Y CALCULAR MAX POR MES (2024-2025)
-# Nota: pivote SOLO por Código para evitar duplicados por cambios de nombre.
-#       El nombre vigente lo manda Erply; el histórico solo sirve como fallback.
+# - pivote SOLO por Código para evitar duplicados si el nombre cambió
+# - el nombre vigente lo manda Erply; histórico solo fallback
 # =========================================================
 hist = pd.read_excel(hist_file, engine="openpyxl")
 
@@ -127,14 +126,12 @@ hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 
-# Nombre histórico (solo fallback): primer nombre encontrado por código
 nombre_hist = (
     hist.loc[hist["Nombre"].ne(""), ["Código", "Nombre"]]
         .drop_duplicates(subset=["Código"], keep="first")
         .rename(columns={"Nombre": "Nombre_hist"})
 )
 
-# Max por mes (ignorando nombre)
 g = hist.groupby(["Código", "Mes"], as_index=False)["Ventas"].max()
 
 p = g.pivot_table(
@@ -150,7 +147,6 @@ for m in range(1, 13):
         p[m] = 0
 
 p = p.rename(columns={m: f"Max_M{m:02d}" for m in range(1, 13)})
-
 max_mes_df = p.merge(nombre_hist, on="Código", how="left")
 
 # =========================================================
@@ -178,7 +174,6 @@ final["Nombre"] = np.where(
     final["Nombre_erply"],
     np.where(final["Nombre_hist"].ne(""), final["Nombre_hist"], "(sin nombre)")
 )
-
 final = final.drop(columns=["Nombre_erply"], errors="ignore")
 
 # =========================================================
@@ -232,9 +227,7 @@ final["Compra_sugerida"] = np.ceil(final["Demanda30"] - final["Stock"]).clip(low
 final["Demanda30_mostrar"] = np.round(final["Demanda30"], 0).astype(int)
 
 # =========================================================
-# TABLA FINAL:
-# - Quitar "total ($)" ya se quitó en lectura Erply
-# - Insertar EAN después de Código
+# TABLA FINAL (EAN después de Código)
 # =========================================================
 tabla = final[
     ["Código", "EAN", "Nombre", "Compra_sugerida", "Stock", "V30D", col_act, col_sig, "Demanda30_mostrar"]
@@ -258,7 +251,8 @@ st.subheader("Tabla unificada + compra sugerida")
 st.dataframe(
     tabla.sort_values(["Compra", "Demanda30"], ascending=False),
     use_container_width=True,
-    height=600
+    height=600,
+    hide_index=True  # <-- ELIMINA la primera columna de numeritos
 )
 
 csv = tabla.to_csv(index=False).encode("utf-8-sig")
