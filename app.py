@@ -16,9 +16,10 @@ st.title("Agente de compras")
 # D = Nombre (idx 3)
 # E = V30D  (idx 4)
 # G = Stock (idx 6)
+# L = Importe venta $ (idx 11)   <-- NUEVO (para métrica)
 # =========================================================
 def _looks_like_table(df: pd.DataFrame) -> bool:
-    if df is None or df.empty or df.shape[1] < 7:
+    if df is None or df.empty or df.shape[1] < 12:
         return False
 
     def is_code(x):
@@ -58,14 +59,15 @@ def _read_erply_html(uploaded) -> pd.DataFrame:
 
     start = _detect_data_start(chosen)
 
-    # Tomar columnas suficientes para llegar a G
-    raw = chosen.iloc[start:, :10].copy().reset_index(drop=True)
+    # Tomar columnas suficientes para llegar a L (idx 11)
+    raw = chosen.iloc[start:, :12].copy().reset_index(drop=True)
 
     out = pd.DataFrame({
-        "Código": raw.iloc[:, 1].astype(str).str.strip(),
-        "Nombre": raw.iloc[:, 3].astype(str).fillna(""),
-        "V30D": pd.to_numeric(raw.iloc[:, 4], errors="coerce").fillna(0),   # E
-        "Stock": pd.to_numeric(raw.iloc[:, 6], errors="coerce").fillna(0),  # G
+        "Código": raw.iloc[:, 1].astype(str).str.strip(),                              # B
+        "Nombre": raw.iloc[:, 3].astype(str).fillna(""),                               # D
+        "V30D": pd.to_numeric(raw.iloc[:, 4], errors="coerce").fillna(0),              # E
+        "Stock": pd.to_numeric(raw.iloc[:, 6], errors="coerce").fillna(0),             # G
+        "V30D_Pesos": pd.to_numeric(raw.iloc[:, 11], errors="coerce").fillna(0),       # L
     })
 
     # Quitar filas basura
@@ -136,6 +138,7 @@ max_mes_df = p.rename(columns={"Nombre": "Nombre_hist"})
 vs = _read_erply_html(erply_file)
 vs["V30D"] = pd.to_numeric(vs["V30D"], errors="coerce").fillna(0)
 vs["Stock"] = pd.to_numeric(vs["Stock"], errors="coerce").fillna(0)
+vs["V30D_Pesos"] = pd.to_numeric(vs["V30D_Pesos"], errors="coerce").fillna(0)
 
 # =========================================================
 # MERGE
@@ -186,7 +189,6 @@ final["Demanda30"] = (peso_actual * final[col_act]) + (peso_siguiente * final[co
 
 suma_max_2m = final[col_act] + final[col_sig]
 mask_fallback = (suma_max_2m == 0) & (final["V30D"] > 0)
-
 final.loc[mask_fallback, "Demanda30"] = final.loc[mask_fallback, "V30D"]
 
 # =========================================================
@@ -194,14 +196,19 @@ final.loc[mask_fallback, "Demanda30"] = final.loc[mask_fallback, "V30D"]
 # =========================================================
 final["Compra_sugerida"] = np.ceil(final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
 
+# Demanda30 SIN decimales (solo para mostrar; NO cambia la lógica)
+final["Demanda30_int"] = np.round(final["Demanda30"], 0).astype(int)
+
 # =========================================================
-# TABLA FINAL
+# TABLA FINAL (Compra primero + Demanda30 sin decimales)
 # =========================================================
 tabla = final[
-    ["Código", "Nombre", "Stock", "V30D", col_act, col_sig, "Demanda30", "Compra_sugerida"]
+    ["Compra_sugerida", "Código", "Nombre", "Stock", "V30D", col_act, col_sig, "Demanda30_int"]
 ].rename(columns={
+    "Compra_sugerida": "Compra",
     col_act: f"MaxMes_{mes_actual:02d}",
     col_sig: f"MaxMes_{mes_siguiente:02d}",
+    "Demanda30_int": "Demanda30"
 })
 
 # =========================================================
@@ -210,12 +217,12 @@ tabla = final[
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("SKUs Erply", f"{tabla['Código'].nunique():,}")
 m2.metric("Suma Stock", f"{tabla['Stock'].sum():,.0f}")
-m3.metric("Suma V30D (info)", f"{tabla['V30D'].sum():,.0f}")
-m4.metric("Suma Compra sugerida", f"{tabla['Compra_sugerida'].sum():,.0f}")
+m3.metric("Suma V30D (info)", f"{vs['V30D_Pesos'].sum():,.0f}")  # <-- ahora usa columna L ($)
+m4.metric("Suma Compra sugerida", f"{tabla['Compra'].sum():,.0f}")
 
 st.subheader("Tabla unificada + compra sugerida")
 st.dataframe(
-    tabla.sort_values(["Compra_sugerida", "Demanda30"], ascending=False),
+    tabla.sort_values(["Compra", "Demanda30"], ascending=False),
     use_container_width=True,
     height=600
 )
