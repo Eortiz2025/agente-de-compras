@@ -1,19 +1,12 @@
 # app.py
-# Histórico — Comparativo por mes (Enero 2024 vs Enero 2025)
-# Resumen + detalle por SKU
+# Base 1 — Histórico: comparativo Ene 2024 vs Ene 2025 (unidades e importe) + detalle por SKU
 
 import pandas as pd
 import streamlit as st
 
-# -------------------------
-# Configuración
-# -------------------------
 st.set_page_config(page_title="Histórico — Comparativos", layout="wide")
 st.title("Histórico — Comparativo por mes (Enero 2024 vs Enero 2025)")
 
-# -------------------------
-# Sidebar
-# -------------------------
 st.sidebar.header("1) Cargar histórico")
 hist_file = st.sidebar.file_uploader(
     "Histórico (.xlsx) con columnas: Código, Nombre, Año, Mes, Ventas (Importe opcional)",
@@ -32,7 +25,11 @@ if hist_file is None:
 # -------------------------
 # Leer y validar
 # -------------------------
-df = pd.read_excel(hist_file)
+try:
+    df = pd.read_excel(hist_file)
+except Exception as e:
+    st.error(f"No pude leer el Excel. Error: {e}")
+    st.stop()
 
 required = {"Código", "Nombre", "Año", "Mes", "Ventas"}
 missing = required - set(df.columns)
@@ -40,7 +37,7 @@ if missing:
     st.error(f"Faltan columnas en el archivo: {sorted(missing)}")
     st.stop()
 
-# Normalización
+# Normalización / tipos
 df = df.copy()
 df["Código"] = df["Código"].astype(str).str.strip()
 df["Nombre"] = df["Nombre"].astype(str).fillna("")
@@ -61,13 +58,13 @@ sub_b = df[(df["Año"] == int(anio_b)) & (df["Mes"] == int(mes))]
 u_a = float(sub_a["Ventas"].sum())
 u_b = float(sub_b["Ventas"].sum())
 delta_u = u_b - u_a
-pct_u = (delta_u / u_a * 100) if u_a != 0 else None
+pct_u = (delta_u / u_a * 100.0) if u_a != 0 else None
 
 if has_importe:
     imp_a = float(sub_a["Importe"].sum())
     imp_b = float(sub_b["Importe"].sum())
     delta_imp = imp_b - imp_a
-    pct_imp = (delta_imp / imp_a * 100) if imp_a != 0 else None
+    pct_imp = (delta_imp / imp_a * 100.0) if imp_a != 0 else None
 
 # -------------------------
 # UI — Resumen
@@ -94,12 +91,12 @@ else:
     c4.metric("SKUs únicos (B)", f"{sub_b['Código'].nunique():,}")
 
 st.caption(
-    f"Renglones: {int(anio_a)}={len(sub_a):,} | {int(anio_b)}={len(sub_b):,} | "
-    f"SKUs únicos: {int(anio_a)}={sub_a['Código'].nunique():,} | {int(anio_b)}={sub_b['Código'].nunique():,}"
+    f"Renglones: {int(anio_a)}={len(sub_a):,} | {int(anio_b)}={len(sub_b):,} "
+    f"| SKUs únicos: {int(anio_a)}={sub_a['Código'].nunique():,} | {int(anio_b)}={sub_b['Código'].nunique():,}"
 )
 
 # -------------------------
-# Detalle por SKU
+# UI — Detalle por SKU
 # -------------------------
 st.subheader("Detalle por SKU (unidades)")
 
@@ -118,13 +115,14 @@ b_units = (
 detalle = a_units.merge(b_units, on=["Código", "Nombre"], how="outer").fillna(0)
 detalle["Delta_unidades"] = detalle[f"Unidades_{int(anio_b)}"] - detalle[f"Unidades_{int(anio_a)}"]
 
+col_order = ["Código", "Nombre", f"Unidades_{int(anio_a)}", f"Unidades_{int(anio_b)}", "Delta_unidades"]
+detalle = detalle[col_order].sort_values("Delta_unidades", ascending=True)
+
 tab1, tab2 = st.tabs(["Bajan más", "Suben más"])
 with tab1:
-    st.dataframe(detalle.sort_values("Delta_unidades", ascending=True).head(50),
-                 use_container_width=True, height=520)
+    st.dataframe(detalle.head(50), use_container_width=True, height=520)
 with tab2:
-    st.dataframe(detalle.sort_values("Delta_unidades", ascending=False).head(50),
-                 use_container_width=True, height=520)
+    st.dataframe(detalle.sort_values("Delta_unidades", ascending=False).head(50), use_container_width=True, height=520)
 
 # -------------------------
 # Descarga
