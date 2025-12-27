@@ -126,6 +126,7 @@ hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 
+# Fallback de nombre: el primero no vacío por Código (si existe)
 nombre_hist = (
     hist.loc[hist["Nombre"].ne(""), ["Código", "Nombre"]]
         .drop_duplicates(subset=["Código"], keep="first")
@@ -165,15 +166,23 @@ final = vs.merge(max_mes_df, on="Código", how="left")
 # =========================================================
 # NOMBRE: manda SIEMPRE el de Erply (vigente).
 # Solo si viene vacío, cae al histórico; si no hay, "(sin nombre)".
+#
+# BUG FIX (punto 1): garantizar que Nombre_hist exista como columna
+# y que sea string/llenada con "" para evitar errores silenciosos.
 # =========================================================
 final["Nombre_erply"] = final["Nombre"].astype(str).fillna("").str.strip()
-final["Nombre_hist"] = final.get("Nombre_hist", "").fillna("").astype(str).str.strip()
+
+if "Nombre_hist" not in final.columns:
+    final["Nombre_hist"] = ""
+else:
+    final["Nombre_hist"] = final["Nombre_hist"].fillna("").astype(str).str.strip()
 
 final["Nombre"] = np.where(
     final["Nombre_erply"].ne(""),
     final["Nombre_erply"],
     np.where(final["Nombre_hist"].ne(""), final["Nombre_hist"], "(sin nombre)")
 )
+
 final = final.drop(columns=["Nombre_erply"], errors="ignore")
 
 # =========================================================
@@ -252,7 +261,7 @@ st.dataframe(
     tabla.sort_values(["Compra", "Demanda30"], ascending=False),
     use_container_width=True,
     height=600,
-    hide_index=True  # <-- ELIMINA la primera columna de numeritos
+    hide_index=True
 )
 
 csv = tabla.to_csv(index=False).encode("utf-8-sig")
