@@ -1,16 +1,17 @@
 import streamlit as st
 import pandas as pd
 
-# ✅ Marca visible para confirmar que Streamlit está usando ESTE archivo
 st.set_page_config(page_title="PRUEBA DEPLOY", layout="wide")
+
+# MARCA: si no ves esto, Streamlit NO está leyendo este archivo
 st.title("🚨 CAMBIO DE PRUEBA: 26-DIC-2025 999 🚨")
-st.write("Si ves este texto, Streamlit sí está leyendo este app.py del repo/branch correcto.")
+st.write("Si ves este texto, Streamlit sí está leyendo ESTE app.py del repo/branch correcto.")
 
 st.divider()
-st.header("Comparativo Enero 2024 vs Enero 2025 (desde histórico)")
+st.header("Comparativo Enero 2024 vs Enero 2025 (Histórico)")
 
 hist_file = st.file_uploader(
-    "Sube tu histórico (.xlsx) con columnas: Código, Nombre, Año, Mes, Ventas (Importe opcional)",
+    "Sube histórico (.xlsx) con columnas: Código, Nombre, Año, Mes, Ventas (Importe opcional)",
     type=["xlsx"]
 )
 
@@ -20,14 +21,12 @@ if hist_file is None:
 
 df = pd.read_excel(hist_file)
 
-# Validación mínima
 req = {"Código", "Nombre", "Año", "Mes", "Ventas"}
 missing = req - set(df.columns)
 if missing:
     st.error(f"Faltan columnas: {sorted(missing)}")
     st.stop()
 
-# Normalizar tipos
 df["Año"] = pd.to_numeric(df["Año"], errors="coerce")
 df["Mes"] = pd.to_numeric(df["Mes"], errors="coerce")
 df["Ventas"] = pd.to_numeric(df["Ventas"], errors="coerce").fillna(0)
@@ -36,7 +35,6 @@ has_importe = "Importe" in df.columns
 if has_importe:
     df["Importe"] = pd.to_numeric(df["Importe"], errors="coerce").fillna(0)
 
-# Filtrar enero
 ene_2024 = df[(df["Año"] == 2024) & (df["Mes"] == 1)]
 ene_2025 = df[(df["Año"] == 2025) & (df["Mes"] == 1)]
 
@@ -62,4 +60,5 @@ sku25 = ene_2025.groupby(["Código", "Nombre"], as_index=False)["Ventas"].sum().
 
 detalle = sku24.merge(sku25, on=["Código", "Nombre"], how="outer").fillna(0)
 detalle["Diferencia"] = detalle["Ene_2025"] - detalle["Ene_2024"]
+
 st.dataframe(detalle.sort_values("Diferencia"), use_container_width=True, height=520)
