@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2025-12-27-v3-fast (UI button top + metrics cleaned)"
+APP_VERSION = "2025-12-27-v3-fast (SKU Compra metric added)"
 
 st.set_page_config(page_title="Agente de compras", layout="wide")
 
@@ -201,19 +201,25 @@ tabla = final[
 tabla["Demanda30"] = np.round(tabla["Demanda30"], 0).astype(int)
 
 # =========================================================
-# MÉTRICAS (LIMPIAS, SIN REPETICIÓN)
+# MÉTRICAS
 # =========================================================
 def importe_mes(hist_df, mes):
     s = hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == hoy.year)]["Ventas"].sum()
     if s > 0:
         return float(s)
     years = hist_df.loc[hist_df["Mes"] == mes, "Año"]
-    return float(hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == years.max())]["Ventas"].sum()) if len(years) else 0.0
+    return float(
+        hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == years.max())]["Ventas"].sum()
+    ) if len(years) else 0.0
 
-m1, m2, m3 = st.columns(3)
-m1.metric("SKUs Erply", f"{tabla['Código'].nunique():,}")
-m2.metric(f"Ventas Mes {mes_actual:02d} (hist)", f"${importe_mes(hist, mes_actual):,.0f}")
-m3.metric(f"Ventas Mes {mes_siguiente:02d} (hist)", f"${importe_mes(hist, mes_siguiente):,.0f}")
+skus_total = tabla["Código"].nunique()
+skus_compra = tabla.loc[tabla["Compra"] > 0, "Código"].nunique()
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("SKUs Erply", f"{skus_total:,}")
+m2.metric("SKUs Compra", f"{skus_compra:,}")
+m3.metric(f"Ventas Mes {mes_actual:02d} (hist)", f"${importe_mes(hist, mes_actual):,.0f}")
+m4.metric(f"Ventas Mes {mes_siguiente:02d} (hist)", f"${importe_mes(hist, mes_siguiente):,.0f}")
 
 # =========================================================
 # UI TABLA
@@ -232,4 +238,3 @@ st.download_button(
     file_name="compra_sugerida_30d_ponderada.csv",
     mime="text/csv"
 )
-
