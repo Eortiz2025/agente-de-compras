@@ -95,6 +95,8 @@ if hist_file is None or erply_file is None:
 
 # =========================================================
 # LEER HISTÓRICO Y CALCULAR MAX POR MES (2024-2025)
+# Nota: para evitar duplicados por cambios de nombre, el pivote se hace SOLO por Código.
+#       El nombre vigente lo manda Erply; el histórico solo sirve como fallback.
 # =========================================================
 hist = pd.read_excel(hist_file, engine="openpyxl")
 
@@ -106,17 +108,25 @@ if missing:
 
 hist = hist.copy()
 hist["Código"] = hist["Código"].astype(str).str.strip()
-hist["Nombre"] = hist["Nombre"].astype(str).fillna("")
+hist["Nombre"] = hist["Nombre"].astype(str).fillna("").str.strip()
 hist["Año"] = pd.to_numeric(hist["Año"], errors="coerce")
 hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce")
 hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 
-g = hist.groupby(["Código", "Nombre", "Mes"], as_index=False)["Ventas"].max()
+# Nombre histórico (solo para fallback): primer nombre encontrado por código
+nombre_hist = (
+    hist.loc[hist["Nombre"].ne(""), ["Código", "Nombre"]]
+        .drop_duplicates(subset=["Código"], keep="first")
+        .rename(columns={"Nombre": "Nombre_hist"})
+)
+
+# Max por mes, ignorando nombre para evitar duplicaciones si el nombre cambió
+g = hist.groupby(["Código", "Mes"], as_index=False)["Ventas"].max()
 
 p = g.pivot_table(
-    index=["Código", "Nombre"],
+    index=["Código"],
     columns="Mes",
     values="Ventas",
     aggfunc="max",
@@ -128,7 +138,8 @@ for m in range(1, 13):
         p[m] = 0
 
 p = p.rename(columns={m: f"Max_M{m:02d}" for m in range(1, 13)})
-max_mes_df = p.rename(columns={"Nombre": "Nombre_hist"})
+
+max_mes_df = p.merge(nombre_hist, on="Código", how="left")
 
 # =========================================================
 # LEER ERPLY
@@ -143,9 +154,20 @@ vs["V30D_Pesos"] = pd.to_numeric(vs["V30D_Pesos"], errors="coerce").fillna(0)
 # =========================================================
 final = vs.merge(max_mes_df, on="Código", how="left")
 
-final["Nombre_hist"] = final.get("Nombre_hist", "").fillna("")
-final["Nombre"] = final["Nombre"].astype(str).fillna("")
-final["Nombre"] = final["Nombre"].where(final["Nombre"].str.strip().ne(""), final["Nombre_hist"])
+# =========================================================
+# NOMBRE: manda SIEMPRE el de Erply (vigente).
+# Solo si viene vacío, cae al histórico; si no hay, "(sin nombre)".
+# =========================================================
+final["Nombre_erply"] = final["Nombre"].astype(str).fillna("").str.strip()
+final["Nombre_hist"] = final.get("Nombre_hist", "").fillna("").astype(str).str.strip()
+
+final["Nombre"] = np.where(
+    final["Nombre_erply"].ne(""),
+    final["Nombre_erply"],
+    np.where(final["Nombre_hist"].ne(""), final["Nombre_hist"], "(sin nombre)")
+)
+
+final = final.drop(columns=["Nombre_erply"], errors="ignore")
 
 # =========================================================
 # FECHA MAZATLÁN + PESOS
