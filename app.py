@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2025-12-27-v3-fast (SKU Compra metric added)"
+APP_VERSION = "2025-12-27-v3-fast (SKU Compra metric added + NaN fix)"
 
 st.set_page_config(page_title="Agente de compras", layout="wide")
 
@@ -85,9 +85,12 @@ def read_erply_html_bytes(data: bytes) -> pd.DataFrame:
         "V30D_Pesos": pd.to_numeric(raw.iloc[:, 11], errors="coerce").fillna(0),
     })
 
-    cod = out["Código"].str.lower()
-    out = out[(out["Código"] != "") & (cod != "nan")]
+    cod = out["Código"].astype(str).str.strip().str.lower()
+    out = out[(out["Código"].astype(str).str.strip() != "") & (cod != "nan")]
     out = out[~cod.str.contains(r"^total", regex=True, na=False)]
+
+    # refuerzos (por si viene "nan"/None en EAN)
+    out["EAN"] = out["EAN"].replace({"nan": "", "None": "", "NONE": ""})
 
     return out.reset_index(drop=True)
 
@@ -128,8 +131,8 @@ hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce")
 hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
-hist["Mes"] = hist["Mes"].astype("int16")
-hist["Ventas"] = hist["Ventas"].astype("float32")
+hist["Mes"] = hist["Mes"].astype("int16", errors="ignore")
+hist["Ventas"] = hist["Ventas"].astype("float32", errors="ignore")
 
 # =========================================================
 # MAX POR MES
@@ -156,7 +159,7 @@ max_mes_df = p.merge(nombre_hist, on="Código", how="left")
 final = vs.merge(max_mes_df, on="Código", how="left")
 
 final["Nombre"] = final["Nombre"].fillna("").astype(str).str.strip()
-final["Nombre_hist"] = final["Nombre_hist"].fillna("").astype(str).str.strip()
+final["Nombre_hist"] = final.get("Nombre_hist", "").fillna("").astype(str).str.strip()
 final["Nombre"] = np.where(
     final["Nombre"] != "",
     final["Nombre"],
@@ -179,15 +182,34 @@ mes_siguiente = 1 if mes_actual == 12 else mes_actual + 1
 col_act = f"Max_M{mes_actual:02d}"
 col_sig = f"Max_M{mes_siguiente:02d}"
 
-final[col_act] = final.get(col_act, 0)
-final[col_sig] = final.get(col_sig, 0)
+# asegurar columnas presentes
+if col_act not in final.columns:
+    final[col_act] = 0
+if col_sig not in final.columns:
+    final[col_sig] = 0
 
-final["Demanda30"] = peso_actual * final[col_act] + peso_siguiente * final[col_sig]
+# =========================================================
+# FIX: FORZAR NUMÉRICOS + NaN->0 (evita IntCastingNaNError)
+# =========================================================
+final["Stock"] = pd.to_numeric(final["Stock"], errors="coerce").fillna(0)
+final["V30D"] = pd.to_numeric(final["V30D"], errors="coerce").fillna(0)
+final[col_act] = pd.to_numeric(final[col_act], errors="coerce").fillna(0)
+final[col_sig] = pd.to_numeric(final[col_sig], errors="coerce").fillna(0)
+
+final["Demanda30"] = (peso_actual * final[col_act]) + (peso_siguiente * final[col_sig])
+final["Demanda30"] = pd.to_numeric(final["Demanda30"], errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
 
 mask = (final[col_act] + final[col_sig] == 0) & (final["V30D"] > 0)
 final.loc[mask, "Demanda30"] = final.loc[mask, "V30D"]
 
-final["Compra"] = np.ceil(final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
+# Compra segura (sin NaN)
+final["Compra"] = (
+    np.ceil(final["Demanda30"] - final["Stock"])
+      .clip(lower=0)
+      .replace([np.inf, -np.inf], 0)
+      .fillna(0)
+      .astype(int)
+)
 
 # =========================================================
 # TABLA
@@ -198,6 +220,7 @@ tabla = final[
     col_act: f"MaxMes_{mes_actual:02d}",
     col_sig: f"MaxMes_{mes_siguiente:02d}",
 })
+tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0)
 tabla["Demanda30"] = np.round(tabla["Demanda30"], 0).astype(int)
 
 # =========================================================
@@ -207,10 +230,11 @@ def importe_mes(hist_df, mes):
     s = hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == hoy.year)]["Ventas"].sum()
     if s > 0:
         return float(s)
-    years = hist_df.loc[hist_df["Mes"] == mes, "Año"]
-    return float(
-        hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == years.max())]["Ventas"].sum()
-    ) if len(years) else 0.0
+    years = hist_df.loc[hist_df["Mes"] == mes, "Año"].dropna()
+    if len(years) == 0:
+        return 0.0
+    y = int(years.max())
+    return float(hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == y)]["Ventas"].sum())
 
 skus_total = tabla["Código"].nunique()
 skus_compra = tabla.loc[tabla["Compra"] > 0, "Código"].nunique()
@@ -238,4 +262,3 @@ st.download_button(
     file_name="compra_sugerida_30d_ponderada.csv",
     mime="text/csv"
 )
-
