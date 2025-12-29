@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2025-12-27-v3-fast (SKU Compra metric added + NaN fix)"
+APP_VERSION = "2025-12-27-v3-fast (SKU Compra metric added + NaN fix + métricas por Importe)"
 
 st.set_page_config(page_title="Agente de compras", layout="wide")
 
@@ -89,7 +89,6 @@ def read_erply_html_bytes(data: bytes) -> pd.DataFrame:
     out = out[(out["Código"].astype(str).str.strip() != "") & (cod != "nan")]
     out = out[~cod.str.contains(r"^total", regex=True, na=False)]
 
-    # refuerzos (por si viene "nan"/None en EAN)
     out["EAN"] = out["EAN"].replace({"nan": "", "None": "", "NONE": ""})
 
     return out.reset_index(drop=True)
@@ -104,7 +103,7 @@ def read_hist_xlsx_bytes(data: bytes) -> pd.DataFrame:
 colL, colR = st.columns(2)
 with colL:
     hist_file = st.file_uploader(
-        "1) Histórico (.xlsx) — columnas: Código, Nombre, Año, Mes, Ventas",
+        "1) Histórico (.xlsx) — columnas: Código, Nombre, Año, Mes, Ventas, Importe",
         type=["xlsx"]
     )
 with colR:
@@ -123,19 +122,28 @@ vs = read_erply_html_bytes(erply_file.getvalue())
 # =========================================================
 # HISTÓRICO
 # =========================================================
+req = {"Código", "Nombre", "Año", "Mes", "Ventas", "Importe"}
+missing = req - set(hist.columns)
+if missing:
+    st.error(f"Histórico: faltan columnas {sorted(missing)}")
+    st.stop()
+
 hist = hist.copy()
 hist["Código"] = hist["Código"].astype(str).str.strip()
 hist["Nombre"] = hist["Nombre"].astype(str).fillna("").str.strip()
 hist["Año"] = pd.to_numeric(hist["Año"], errors="coerce")
 hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce")
 hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
+hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0)
 
+# SOLO 2024-2025 (igual que antes)
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 hist["Mes"] = hist["Mes"].astype("int16", errors="ignore")
 hist["Ventas"] = hist["Ventas"].astype("float32", errors="ignore")
+hist["Importe"] = hist["Importe"].astype("float32", errors="ignore")
 
 # =========================================================
-# MAX POR MES
+# MAX POR MES (por Código) - IGUAL (usa Ventas)
 # =========================================================
 nombre_hist = (
     hist.loc[hist["Nombre"] != "", ["Código", "Nombre"]]
@@ -182,7 +190,6 @@ mes_siguiente = 1 if mes_actual == 12 else mes_actual + 1
 col_act = f"Max_M{mes_actual:02d}"
 col_sig = f"Max_M{mes_siguiente:02d}"
 
-# asegurar columnas presentes
 if col_act not in final.columns:
     final[col_act] = 0
 if col_sig not in final.columns:
@@ -202,7 +209,6 @@ final["Demanda30"] = pd.to_numeric(final["Demanda30"], errors="coerce").replace(
 mask = (final[col_act] + final[col_sig] == 0) & (final["V30D"] > 0)
 final.loc[mask, "Demanda30"] = final.loc[mask, "V30D"]
 
-# Compra segura (sin NaN)
 final["Compra"] = (
     np.ceil(final["Demanda30"] - final["Stock"])
       .clip(lower=0)
@@ -224,17 +230,17 @@ tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0
 tabla["Demanda30"] = np.round(tabla["Demanda30"], 0).astype(int)
 
 # =========================================================
-# MÉTRICAS
+# MÉTRICAS (CAMBIO ÚNICO: ahora suma Importe)
 # =========================================================
 def importe_mes(hist_df, mes):
-    s = hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == hoy.year)]["Ventas"].sum()
+    s = hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == hoy.year)]["Importe"].sum()
     if s > 0:
         return float(s)
     years = hist_df.loc[hist_df["Mes"] == mes, "Año"].dropna()
     if len(years) == 0:
         return 0.0
     y = int(years.max())
-    return float(hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == y)]["Ventas"].sum())
+    return float(hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == y)]["Importe"].sum())
 
 skus_total = tabla["Código"].nunique()
 skus_compra = tabla.loc[tabla["Compra"] > 0, "Código"].nunique()
@@ -242,8 +248,8 @@ skus_compra = tabla.loc[tabla["Compra"] > 0, "Código"].nunique()
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("SKUs Erply", f"{skus_total:,}")
 m2.metric("SKUs Compra", f"{skus_compra:,}")
-m3.metric(f"Ventas Mes {mes_actual:02d} (hist)", f"${importe_mes(hist, mes_actual):,.0f}")
-m4.metric(f"Ventas Mes {mes_siguiente:02d} (hist)", f"${importe_mes(hist, mes_siguiente):,.0f}")
+m3.metric(f"Importe Mes {mes_actual:02d} (hist)", f"${importe_mes(hist, mes_actual):,.0f}")
+m4.metric(f"Importe Mes {mes_siguiente:02d} (hist)", f"${importe_mes(hist, mes_siguiente):,.0f}")
 
 # =========================================================
 # UI TABLA
@@ -262,4 +268,3 @@ st.download_button(
     file_name="compra_sugerida_30d_ponderada.csv",
     mime="text/csv"
 )
-
