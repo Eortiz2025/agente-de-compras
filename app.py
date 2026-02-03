@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2026-02-02-v4 (P90 por mes + V30D siempre 25%)"
+APP_VERSION = "2026-02-02-v4.1 (P90 entero por mes + V30D siempre 25%)"
 
 # Parámetros clave
 ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días)
@@ -154,15 +154,15 @@ nombre_hist = (
     .rename(columns={"Nombre": "Nombre_hist"})
 )
 
-def p90(x):
+def p90_int(x):
     x = pd.to_numeric(x, errors="coerce").dropna()
     if len(x) == 0:
-        return 0.0
-    return float(np.percentile(x, 90))
+        return 0
+    return int(np.round(np.percentile(x, 90), 0))
 
 g = (
     hist.groupby(["Código", "Mes"])["Ventas"]
-        .apply(p90)
+        .apply(p90_int)
         .reset_index(name="P90")
 )
 
@@ -172,7 +172,7 @@ for m in range(1, 13):
     if m not in p.columns:
         p[m] = 0
 
-# Conservamos el nombre de columnas como antes para tocar lo mínimo
+# Conservamos nombres para tocar lo mínimo
 p = p.rename(columns={m: f"Max_M{m:02d}" for m in range(1, 13)})
 
 max_mes_df = p.merge(nombre_hist, on="Código", how="left")
@@ -212,7 +212,7 @@ if col_sig not in final.columns:
     final[col_sig] = 0
 
 # =========================================================
-# FIX: FORZAR NUMÉRICOS + NaN->0 (evita IntCastingNaNError)
+# FIX: FORZAR NUMÉRICOS + NaN->0
 # =========================================================
 final["Stock"] = pd.to_numeric(final["Stock"], errors="coerce").fillna(0)
 final["V30D"] = pd.to_numeric(final["V30D"], errors="coerce").fillna(0)
@@ -227,6 +227,9 @@ base_hist = pd.to_numeric(base_hist, errors="coerce").replace([np.inf, -np.inf],
 
 final["Demanda30"] = ((1 - ALPHA_V30D) * base_hist) + (ALPHA_V30D * final["V30D"])
 final["Demanda30"] = pd.to_numeric(final["Demanda30"], errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
+
+# Compra con demanda redondeada (opcional, mantiene coherencia)
+final["Demanda30"] = np.round(final["Demanda30"], 0).astype(int)
 
 # =========================================================
 # COMPRA
@@ -248,15 +251,16 @@ tabla = final[
     col_act: f"P90Mes_{mes_actual:02d}",
     col_sig: f"P90Mes_{mes_siguiente:02d}",
 })
-tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0)
-tabla["Demanda30"] = np.round(tabla["Demanda30"], 0).astype(int)
+
+# Garantiza enteros sin decimales en P90 y Demanda30
+tabla[f"P90Mes_{mes_actual:02d}"] = pd.to_numeric(tabla[f"P90Mes_{mes_actual:02d}"], errors="coerce").fillna(0).astype(int)
+tabla[f"P90Mes_{mes_siguiente:02d}"] = pd.to_numeric(tabla[f"P90Mes_{mes_siguiente:02d}"], errors="coerce").fillna(0).astype(int)
+tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0).astype(int)
 
 # =========================================================
 # MÉTRICAS
 # =========================================================
 def importe_mes(hist_df, mes):
-    # Nota: hist está filtrado a 2024-2025; hoy.year (2026) no existirá aquí.
-    # Este método ya cae al último año disponible automáticamente.
     s = hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == hoy.year)]["Importe"].sum()
     if s > 0:
         return float(s)
@@ -278,7 +282,7 @@ m4.metric(f"Importe Mes {mes_siguiente:02d} (hist)", f"${importe_mes(hist, mes_s
 # =========================================================
 # UI TABLA
 # =========================================================
-st.subheader("Tabla unificada + compra sugerida (P90 + V30D 25%)")
+st.subheader("Compra Sugerida (P90 + V30D 25%)")
 st.dataframe(
     tabla.sort_values(["Compra", "Demanda30"], ascending=False),
     use_container_width=True,
