@@ -10,7 +10,10 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2025-12-27-v3-fast (SKU Compra metric added + NaN fix + métricas por Importe)"
+APP_VERSION = "2026-02-02-v4 (P90 por mes + V30D siempre 25%)"
+
+# Parámetros clave
+ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días)
 
 st.set_page_config(page_title="Agente de compras", layout="wide")
 
@@ -143,7 +146,7 @@ hist["Ventas"] = hist["Ventas"].astype("float32", errors="ignore")
 hist["Importe"] = hist["Importe"].astype("float32", errors="ignore")
 
 # =========================================================
-# MAX POR MES (por Código) - IGUAL (usa Ventas)
+# P90 POR MES (por Código) - reemplaza MAX
 # =========================================================
 nombre_hist = (
     hist.loc[hist["Nombre"] != "", ["Código", "Nombre"]]
@@ -151,14 +154,27 @@ nombre_hist = (
     .rename(columns={"Nombre": "Nombre_hist"})
 )
 
-g = hist.groupby(["Código", "Mes"], as_index=False)["Ventas"].max()
-p = g.pivot_table(index="Código", columns="Mes", values="Ventas", fill_value=0).reset_index()
+def p90(x):
+    x = pd.to_numeric(x, errors="coerce").dropna()
+    if len(x) == 0:
+        return 0.0
+    return float(np.percentile(x, 90))
+
+g = (
+    hist.groupby(["Código", "Mes"])["Ventas"]
+        .apply(p90)
+        .reset_index(name="P90")
+)
+
+p = g.pivot_table(index="Código", columns="Mes", values="P90", fill_value=0).reset_index()
 
 for m in range(1, 13):
     if m not in p.columns:
         p[m] = 0
 
+# Conservamos el nombre de columnas como antes para tocar lo mínimo
 p = p.rename(columns={m: f"Max_M{m:02d}" for m in range(1, 13)})
+
 max_mes_df = p.merge(nombre_hist, on="Código", how="left")
 
 # =========================================================
@@ -203,12 +219,18 @@ final["V30D"] = pd.to_numeric(final["V30D"], errors="coerce").fillna(0)
 final[col_act] = pd.to_numeric(final[col_act], errors="coerce").fillna(0)
 final[col_sig] = pd.to_numeric(final[col_sig], errors="coerce").fillna(0)
 
-final["Demanda30"] = (peso_actual * final[col_act]) + (peso_siguiente * final[col_sig])
+# =========================================================
+# DEMANDA30: base estacional (P90) + V30D siempre 25%
+# =========================================================
+base_hist = (peso_actual * final[col_act]) + (peso_siguiente * final[col_sig])
+base_hist = pd.to_numeric(base_hist, errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
+
+final["Demanda30"] = ((1 - ALPHA_V30D) * base_hist) + (ALPHA_V30D * final["V30D"])
 final["Demanda30"] = pd.to_numeric(final["Demanda30"], errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
 
-mask = (final[col_act] + final[col_sig] == 0) & (final["V30D"] > 0)
-final.loc[mask, "Demanda30"] = final.loc[mask, "V30D"]
-
+# =========================================================
+# COMPRA
+# =========================================================
 final["Compra"] = (
     np.ceil(final["Demanda30"] - final["Stock"])
       .clip(lower=0)
@@ -223,16 +245,18 @@ final["Compra"] = (
 tabla = final[
     ["Código", "EAN", "Nombre", "Compra", "Stock", "V30D", col_act, col_sig, "Demanda30"]
 ].rename(columns={
-    col_act: f"MaxMes_{mes_actual:02d}",
-    col_sig: f"MaxMes_{mes_siguiente:02d}",
+    col_act: f"P90Mes_{mes_actual:02d}",
+    col_sig: f"P90Mes_{mes_siguiente:02d}",
 })
 tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0)
 tabla["Demanda30"] = np.round(tabla["Demanda30"], 0).astype(int)
 
 # =========================================================
-# MÉTRICAS (CAMBIO ÚNICO: ahora suma Importe)
+# MÉTRICAS
 # =========================================================
 def importe_mes(hist_df, mes):
+    # Nota: hist está filtrado a 2024-2025; hoy.year (2026) no existirá aquí.
+    # Este método ya cae al último año disponible automáticamente.
     s = hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == hoy.year)]["Importe"].sum()
     if s > 0:
         return float(s)
@@ -254,7 +278,7 @@ m4.metric(f"Importe Mes {mes_siguiente:02d} (hist)", f"${importe_mes(hist, mes_s
 # =========================================================
 # UI TABLA
 # =========================================================
-st.subheader("Tabla unificada + compra sugerida")
+st.subheader("Tabla unificada + compra sugerida (P90 + V30D 25%)")
 st.dataframe(
     tabla.sort_values(["Compra", "Demanda30"], ascending=False),
     use_container_width=True,
@@ -265,7 +289,6 @@ st.dataframe(
 st.download_button(
     "Descargar CSV",
     data=tabla.to_csv(index=False).encode("utf-8-sig"),
-    file_name="compra_sugerida_30d_ponderada.csv",
+    file_name="compra_sugerida_30d_p90_v30d25.csv",
     mime="text/csv"
 )
-
