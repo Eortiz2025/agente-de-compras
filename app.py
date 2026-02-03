@@ -10,10 +10,10 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2026-02-02-v4.1 (P90 entero por mes + V30D siempre 25%)"
+APP_VERSION = "2026-02-02-v4.2 (P90 entero por mes + V30D 25% salvo histórico 0 -> V30D 100%)"
 
 # Parámetros clave
-ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días)
+ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días) cuando hay histórico
 
 st.set_page_config(page_title="Agente de compras", layout="wide")
 
@@ -146,6 +146,16 @@ hist["Ventas"] = hist["Ventas"].astype("float32", errors="ignore")
 hist["Importe"] = hist["Importe"].astype("float32", errors="ignore")
 
 # =========================================================
+# NUEVO: HISTÓRICO TOTAL 2024+2025 POR CÓDIGO (para detectar "nuevo producto")
+# Si la suma de Ventas en 2024 y 2025 es 0 => usar V30D al 100%
+# =========================================================
+hist_total_24_25 = (
+    hist.groupby("Código", as_index=False)["Ventas"]
+        .sum()
+        .rename(columns={"Ventas": "Hist_24_25_Ventas"})
+)
+
+# =========================================================
 # P90 POR MES (por Código) - reemplaza MAX
 # =========================================================
 nombre_hist = (
@@ -181,6 +191,10 @@ max_mes_df = p.merge(nombre_hist, on="Código", how="left")
 # MERGE
 # =========================================================
 final = vs.merge(max_mes_df, on="Código", how="left")
+
+# Agrega la suma 2024-2025 para detectar nuevos
+final = final.merge(hist_total_24_25, on="Código", how="left")
+final["Hist_24_25_Ventas"] = pd.to_numeric(final["Hist_24_25_Ventas"], errors="coerce").fillna(0)
 
 final["Nombre"] = final["Nombre"].fillna("").astype(str).str.strip()
 final["Nombre_hist"] = final.get("Nombre_hist", "").fillna("").astype(str).str.strip()
@@ -220,12 +234,22 @@ final[col_act] = pd.to_numeric(final[col_act], errors="coerce").fillna(0)
 final[col_sig] = pd.to_numeric(final[col_sig], errors="coerce").fillna(0)
 
 # =========================================================
-# DEMANDA30: base estacional (P90) + V30D siempre 25%
+# DEMANDA30: base estacional (P90) + V30D
+# Regla nueva:
+# - Si Hist_24_25_Ventas == 0 => Demanda30 = V30D (100%)
+# - Si no => Demanda30 = (1-ALPHA)*base_hist + ALPHA*V30D
 # =========================================================
 base_hist = (peso_actual * final[col_act]) + (peso_siguiente * final[col_sig])
 base_hist = pd.to_numeric(base_hist, errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
 
-final["Demanda30"] = ((1 - ALPHA_V30D) * base_hist) + (ALPHA_V30D * final["V30D"])
+demanda_mix = ((1 - ALPHA_V30D) * base_hist) + (ALPHA_V30D * final["V30D"])
+
+final["Demanda30"] = np.where(
+    final["Hist_24_25_Ventas"] <= 0,
+    final["V30D"],
+    demanda_mix
+)
+
 final["Demanda30"] = pd.to_numeric(final["Demanda30"], errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
 
 # Compra con demanda redondeada (opcional, mantiene coherencia)
@@ -282,7 +306,7 @@ m4.metric(f"Importe Mes {mes_siguiente:02d} (hist)", f"${importe_mes(hist, mes_s
 # =========================================================
 # UI TABLA
 # =========================================================
-st.subheader("Compra Sugerida (P90 + V30D 25%)")
+st.subheader("Compra Sugerida (P90 + V30D 25% | nuevo SKU hist 0 => V30D 100%)")
 st.dataframe(
     tabla.sort_values(["Compra", "Demanda30"], ascending=False),
     use_container_width=True,
@@ -293,6 +317,6 @@ st.dataframe(
 st.download_button(
     "Descargar CSV",
     data=tabla.to_csv(index=False).encode("utf-8-sig"),
-    file_name="compra_sugerida_30d_p90_v30d25.csv",
+    file_name="compra_sugerida_30d_p90_v30d25_con_nuevos_v30d100.csv",
     mime="text/csv"
 )
