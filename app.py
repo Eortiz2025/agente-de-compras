@@ -320,6 +320,6 @@ st.dataframe(
 st.download_button(
     "Descargar CSV",
     data=tabla.to_csv(index=False).encode("utf-8-sig"),
-    file_name="compra_sugerida_30d_p90_v30d25_con_nuevos_v30d100_demanda_ceil.csv",
+    file_name="Compra sugerida.csv",
     mime="text/csv"
 )
