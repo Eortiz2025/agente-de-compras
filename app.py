@@ -309,7 +309,7 @@ m4.metric(f"Importe Mes {mes_siguiente:02d} (hist)", f"${importe_mes(hist, mes_s
 # =========================================================
 # UI TABLA
 # =========================================================
-st.subheader("Compra Sugerida (P90 + V30D 25% | hist 0 => V30D 100% | Demanda30=ceil)")
+st.subheader("Compra Sugerida")
 st.dataframe(
     tabla.sort_values(["Compra", "Demanda30"], ascending=False),
     use_container_width=True,
