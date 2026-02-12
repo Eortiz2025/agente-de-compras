@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2026-02-02-v4.3 (P90 entero por mes + V30D 25% salvo hist 0 -> V30D 100% | Demanda30 ceil)"
+APP_VERSION = "2026-02-02-v4.4 (P90 escalón 'higher' + V30D 25% salvo hist 0 -> V30D 100% | Demanda30 ceil | Fix astype errors | Normalize Código | Compra simplificada)"
 
 # Parámetros clave
 ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días) cuando hay histórico
@@ -30,9 +30,12 @@ with tcol2:
         st.rerun()
 
 # =========================================================
-# REGEX
+# HELPERS
 # =========================================================
 CODE_RE = re.compile(r"^[A-Za-z0-9\-]+$")
+
+def norm_code(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.strip().str.upper()
 
 # =========================================================
 # ERPLY HTML
@@ -94,6 +97,9 @@ def read_erply_html_bytes(data: bytes) -> pd.DataFrame:
 
     out["EAN"] = out["EAN"].replace({"nan": "", "None": "", "NONE": ""})
 
+    # Normaliza Código para merges
+    out["Código"] = norm_code(out["Código"])
+
     return out.reset_index(drop=True)
 
 @st.cache_data(show_spinner=False)
@@ -132,7 +138,10 @@ if missing:
     st.stop()
 
 hist = hist.copy()
-hist["Código"] = hist["Código"].astype(str).str.strip()
+
+# Normaliza Código para merges
+hist["Código"] = norm_code(hist["Código"])
+
 hist["Nombre"] = hist["Nombre"].astype(str).fillna("").str.strip()
 hist["Año"] = pd.to_numeric(hist["Año"], errors="coerce")
 hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce")
@@ -141,9 +150,11 @@ hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0)
 
 # SOLO 2024-2025 (igual que antes)
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
-hist["Mes"] = hist["Mes"].astype("int16", errors="ignore")
-hist["Ventas"] = hist["Ventas"].astype("float32", errors="ignore")
-hist["Importe"] = hist["Importe"].astype("float32", errors="ignore")
+
+# FIX: astype() sin errors=
+hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce").fillna(0).astype("int16")
+hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0).astype("float32")
+hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0).astype("float32")
 
 # =========================================================
 # HISTÓRICO TOTAL 2024+2025 POR CÓDIGO (detectar "nuevo producto")
@@ -157,6 +168,7 @@ hist_total_24_25 = (
 
 # =========================================================
 # P90 POR MES (por Código) - reemplaza MAX
+# - Usar quantile method='higher' para que el P90 sea un valor observado (escalón)
 # =========================================================
 nombre_hist = (
     hist.loc[hist["Nombre"] != "", ["Código", "Nombre"]]
@@ -168,7 +180,12 @@ def p90_int(x):
     x = pd.to_numeric(x, errors="coerce").dropna()
     if len(x) == 0:
         return 0
-    return int(np.round(np.percentile(x, 90), 0))
+    # P90 por escalón (observado). Requiere numpy/pandas recientes; si no, fallback abajo.
+    try:
+        return int(np.quantile(x, 0.90, method="higher"))
+    except TypeError:
+        # Compatibilidad con numpy viejo
+        return int(np.percentile(x, 90, interpolation="higher"))
 
 g = (
     hist.groupby(["Código", "Mes"])["Ventas"]
@@ -253,21 +270,14 @@ final["Demanda30"] = np.where(
 final["Demanda30"] = pd.to_numeric(final["Demanda30"], errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
 
 # =========================================================
-# CAMBIO OPCIÓN A:
-# en vez de round() usamos ceil() para que señales como 0.25 => 1
+# Demanda30: ceil a entero
 # =========================================================
 final["Demanda30"] = np.ceil(final["Demanda30"]).astype(int)
 
 # =========================================================
-# COMPRA
+# COMPRA: simplificada (Demanda30 ya es int)
 # =========================================================
-final["Compra"] = (
-    np.ceil(final["Demanda30"] - final["Stock"])
-      .clip(lower=0)
-      .replace([np.inf, -np.inf], 0)
-      .fillna(0)
-      .astype(int)
-)
+final["Compra"] = (final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
 
 # =========================================================
 # TABLA
@@ -288,9 +298,14 @@ tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0
 # MÉTRICAS
 # =========================================================
 def importe_mes(hist_df, mes):
+    """
+    Nota: tu hist está filtrado a 2024-2025, así que hoy.year (2026) normalmente no existirá.
+    Conservamos tu lógica: intenta año actual y si no, usa el último año disponible para ese mes.
+    """
     s = hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == hoy.year)]["Importe"].sum()
     if s > 0:
         return float(s)
+
     years = hist_df.loc[hist_df["Mes"] == mes, "Año"].dropna()
     if len(years) == 0:
         return 0.0
