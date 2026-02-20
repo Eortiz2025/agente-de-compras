@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2026-02-02-v4.4 (P90 escalón 'higher' + V30D 25% salvo hist 0 -> V30D 100% | Demanda30 ceil | Fix astype errors | Normalize Código | Compra simplificada)"
+APP_VERSION = "2026-02-02-v4.4 (P90 escalón 'higher' + V30D 25% salvo hist 0 -> V30D 100% | Demanda30 ceil | Fix astype errors | Normalize Código | Compra simplificada | + Importe a comprar)"
 
 # Parámetros clave
 ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días) cuando hay histórico
@@ -157,6 +157,20 @@ hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0).astype
 hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0).astype("float32")
 
 # =========================================================
+# COSTO UNITARIO (24m: aquí 2024-2025) = SUM(Importe) / SUM(Ventas) por Código
+# =========================================================
+costo_unit_df = (
+    hist.groupby("Código", as_index=False)
+        .agg(Ventas_total=("Ventas", "sum"), Importe_total=("Importe", "sum"))
+)
+costo_unit_df["Costo_Unitario"] = np.where(
+    costo_unit_df["Ventas_total"] > 0,
+    costo_unit_df["Importe_total"] / costo_unit_df["Ventas_total"],
+    np.nan
+)
+costo_unit_df["Costo_Unitario"] = pd.to_numeric(costo_unit_df["Costo_Unitario"], errors="coerce")
+
+# =========================================================
 # HISTÓRICO TOTAL 2024+2025 POR CÓDIGO (detectar "nuevo producto")
 # Si la suma de Ventas en 2024 y 2025 es 0 => usar V30D al 100%
 # =========================================================
@@ -212,6 +226,10 @@ final = vs.merge(max_mes_df, on="Código", how="left")
 # Agrega la suma 2024-2025 para detectar nuevos
 final = final.merge(hist_total_24_25, on="Código", how="left")
 final["Hist_24_25_Ventas"] = pd.to_numeric(final["Hist_24_25_Ventas"], errors="coerce").fillna(0)
+
+# Agrega costo unitario
+final = final.merge(costo_unit_df[["Código", "Costo_Unitario"]], on="Código", how="left")
+final["Costo_Unitario"] = pd.to_numeric(final["Costo_Unitario"], errors="coerce")  # puede quedar NaN
 
 final["Nombre"] = final["Nombre"].fillna("").astype(str).str.strip()
 final["Nombre_hist"] = final.get("Nombre_hist", "").fillna("").astype(str).str.strip()
@@ -280,6 +298,13 @@ final["Demanda30"] = np.ceil(final["Demanda30"]).astype(int)
 final["Compra"] = (final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
 
 # =========================================================
+# IMPORTE A COMPRAR = Compra * Costo_Unitario
+# (Costo_Unitario viene de hist: SUM(Importe)/SUM(Ventas) por Código)
+# =========================================================
+final["Importe_Compra"] = final["Compra"] * final["Costo_Unitario"]
+importe_a_comprar_total = float(pd.to_numeric(final["Importe_Compra"], errors="coerce").fillna(0).sum())
+
+# =========================================================
 # TABLA
 # =========================================================
 tabla = final[
@@ -296,30 +321,15 @@ tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0
 
 # =========================================================
 # MÉTRICAS
+# (Se eliminan: Importe Mes XX (hist) y se reemplaza por Importe a comprar)
 # =========================================================
-def importe_mes(hist_df, mes):
-    """
-    Nota: tu hist está filtrado a 2024-2025, así que hoy.year (2026) normalmente no existirá.
-    Conservamos tu lógica: intenta año actual y si no, usa el último año disponible para ese mes.
-    """
-    s = hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == hoy.year)]["Importe"].sum()
-    if s > 0:
-        return float(s)
-
-    years = hist_df.loc[hist_df["Mes"] == mes, "Año"].dropna()
-    if len(years) == 0:
-        return 0.0
-    y = int(years.max())
-    return float(hist_df[(hist_df["Mes"] == mes) & (hist_df["Año"] == y)]["Importe"].sum())
-
 skus_total = tabla["Código"].nunique()
 skus_compra = tabla.loc[tabla["Compra"] > 0, "Código"].nunique()
 
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3 = st.columns(3)
 m1.metric("SKUs Erply", f"{skus_total:,}")
 m2.metric("SKUs Compra", f"{skus_compra:,}")
-m3.metric(f"Importe Mes {mes_actual:02d} (hist)", f"${importe_mes(hist, mes_actual):,.0f}")
-m4.metric(f"Importe Mes {mes_siguiente:02d} (hist)", f"${importe_mes(hist, mes_siguiente):,.0f}")
+m3.metric("Importe a comprar (estimado)", f"${importe_a_comprar_total:,.0f}")
 
 # =========================================================
 # UI TABLA
