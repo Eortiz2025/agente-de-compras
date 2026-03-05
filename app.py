@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2026-02-02-v4.4 (P90 escalón 'higher' + V30D 25% salvo hist 0 -> V30D 100% | Demanda30 ceil | Fix astype errors | Normalize Código | Compra simplificada | + Importe a comprar)"
+APP_VERSION = "2026-02-02-v4.4 + AmazonSpikeBrake (alpha dinámico + V30D ajustado por sqrt(R))"
 
 # Parámetros clave
 ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días) cuando hay histórico
@@ -194,11 +194,9 @@ def p90_int(x):
     x = pd.to_numeric(x, errors="coerce").dropna()
     if len(x) == 0:
         return 0
-    # P90 por escalón (observado). Requiere numpy/pandas recientes; si no, fallback abajo.
     try:
         return int(np.quantile(x, 0.90, method="higher"))
     except TypeError:
-        # Compatibilidad con numpy viejo
         return int(np.percentile(x, 90, interpolation="higher"))
 
 g = (
@@ -213,7 +211,6 @@ for m in range(1, 13):
     if m not in p.columns:
         p[m] = 0
 
-# Conservamos nombres para tocar lo mínimo
 p = p.rename(columns={m: f"Max_M{m:02d}" for m in range(1, 13)})
 
 max_mes_df = p.merge(nombre_hist, on="Código", how="left")
@@ -223,11 +220,9 @@ max_mes_df = p.merge(nombre_hist, on="Código", how="left")
 # =========================================================
 final = vs.merge(max_mes_df, on="Código", how="left")
 
-# Agrega la suma 2024-2025 para detectar nuevos
 final = final.merge(hist_total_24_25, on="Código", how="left")
 final["Hist_24_25_Ventas"] = pd.to_numeric(final["Hist_24_25_Ventas"], errors="coerce").fillna(0)
 
-# Agrega costo unitario
 final = final.merge(costo_unit_df[["Código", "Costo_Unitario"]], on="Código", how="left")
 final["Costo_Unitario"] = pd.to_numeric(final["Costo_Unitario"], errors="coerce")  # puede quedar NaN
 
@@ -273,16 +268,41 @@ final[col_sig] = pd.to_numeric(final[col_sig], errors="coerce").fillna(0)
 # Regla:
 # - Si Hist_24_25_Ventas == 0 => Demanda30 = V30D (100%)
 # - Si no => Demanda30 = (1-ALPHA)*base_hist + ALPHA*V30D
+#
+# CAMBIO AGREGADO (AmazonSpikeBrake):
+# - Cuando V30D se dispara vs base_hist, se aplica freno:
+#   R = V30D / base_hist
+#   R_eff = max(R, 1)  # solo frena picos; no aumenta peso si V30D < base_hist
+#   alpha_dyn = ALPHA / sqrt(R_eff)
+#   V30D_adj = base_hist * sqrt(R_eff)
+#   Demanda_mix = (1-alpha_dyn)*base_hist + alpha_dyn*V30D_adj
 # =========================================================
 base_hist = (peso_actual * final[col_act]) + (peso_siguiente * final[col_sig])
 base_hist = pd.to_numeric(base_hist, errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
 
-demanda_mix = ((1 - ALPHA_V30D) * base_hist) + (ALPHA_V30D * final["V30D"])
+# --- AmazonSpikeBrake (solo aplica cuando hay histórico y base_hist>0) ---
+# Ratio R; si base_hist==0, forzamos R=1 (sin freno)
+R = np.where(base_hist > 0, final["V30D"] / base_hist, 1.0)
+R = pd.to_numeric(R, errors="coerce")
+R = np.where(np.isfinite(R), R, 1.0)
+
+# Solo frenar picos: R_eff >= 1
+R_eff = np.maximum(R, 1.0)
+
+sqrt_R = np.sqrt(R_eff)
+
+alpha_dyn = ALPHA_V30D / sqrt_R
+# Bound por seguridad: 0..ALPHA_V30D
+alpha_dyn = np.clip(alpha_dyn, 0.0, ALPHA_V30D)
+
+V30D_adj = base_hist * sqrt_R
+
+demanda_mix = ((1 - alpha_dyn) * base_hist) + (alpha_dyn * V30D_adj)
 
 final["Demanda30"] = np.where(
     final["Hist_24_25_Ventas"] <= 0,
-    final["V30D"],
-    demanda_mix
+    final["V30D"],          # nuevo producto: 100% V30D (igual que antes)
+    demanda_mix             # con histórico: mezcla con freno (cambio)
 )
 
 final["Demanda30"] = pd.to_numeric(final["Demanda30"], errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
@@ -299,7 +319,6 @@ final["Compra"] = (final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int
 
 # =========================================================
 # IMPORTE A COMPRAR = Compra * Costo_Unitario
-# (Costo_Unitario viene de hist: SUM(Importe)/SUM(Ventas) por Código)
 # =========================================================
 final["Importe_Compra"] = final["Compra"] * final["Costo_Unitario"]
 importe_a_comprar_total = float(pd.to_numeric(final["Importe_Compra"], errors="coerce").fillna(0).sum())
@@ -314,14 +333,12 @@ tabla = final[
     col_sig: f"P90Mes_{mes_siguiente:02d}",
 })
 
-# Garantiza enteros sin decimales en P90 y Demanda30
 tabla[f"P90Mes_{mes_actual:02d}"] = pd.to_numeric(tabla[f"P90Mes_{mes_actual:02d}"], errors="coerce").fillna(0).astype(int)
 tabla[f"P90Mes_{mes_siguiente:02d}"] = pd.to_numeric(tabla[f"P90Mes_{mes_siguiente:02d}"], errors="coerce").fillna(0).astype(int)
 tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0).astype(int)
 
 # =========================================================
 # MÉTRICAS
-# (Se eliminan: Importe Mes XX (hist) y se reemplaza por Importe a comprar)
 # =========================================================
 skus_total = tabla["Código"].nunique()
 skus_compra = tabla.loc[tabla["Compra"] > 0, "Código"].nunique()
