@@ -10,10 +10,19 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2026-02-02-v4.5 + fallback V30D cuando base_hist=0"
+APP_VERSION = "2026-03-16-v4.6 + múltiplos empaque"
 
 # Parámetros clave
 ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días) cuando hay histórico
+
+# Reglas de empaque (prefijo del nombre -> múltiplo)
+PACK_RULES = [
+    ("POLITEC 100M", 12),
+    ("POLITEC 250M", 6),
+    ("POLITEC 30M", 15),
+    ("PINTURA OLEO ATL 160CC", 3),
+    ("PINTURA OLEO ATL 40CC", 3),
+]
 
 st.set_page_config(page_title="Agente de compras", layout="wide")
 
@@ -36,6 +45,22 @@ CODE_RE = re.compile(r"^[A-Za-z0-9\-]+$")
 
 def norm_code(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().str.upper()
+
+def norm_name_series(s: pd.Series) -> pd.Series:
+    return s.astype(str).fillna("").str.strip().str.upper()
+
+def round_up_to_multiple(qty: float, multiple: int) -> int:
+    qty = pd.to_numeric(qty, errors="coerce")
+    if pd.isna(qty) or qty <= 0 or multiple <= 0:
+        return 0
+    return int(np.ceil(qty / multiple) * multiple)
+
+def detect_pack_rule(name: str):
+    n = str(name).strip().upper()
+    for prefix, multiple in PACK_RULES:
+        if n.startswith(prefix):
+            return prefix, int(multiple)
+    return "", np.nan
 
 # =========================================================
 # ERPLY HTML
@@ -263,7 +288,7 @@ final[col_sig] = pd.to_numeric(final[col_sig], errors="coerce").fillna(0)
 
 # =========================================================
 # DEMANDA30
-# Regla nueva:
+# Regla:
 # - Si Hist_24_25_Ventas == 0 => Demanda30 = V30D
 # - Si base_hist == 0         => Demanda30 = V30D
 # - Si no                     => mezcla con AmazonSpikeBrake
@@ -286,7 +311,6 @@ V30D_adj = base_hist * sqrt_R
 
 demanda_mix = ((1 - alpha_dyn) * base_hist) + (alpha_dyn * V30D_adj)
 
-# NUEVA LÓGICA: fallback a V30D cuando base_hist == 0
 final["Demanda30"] = np.where(
     final["Hist_24_25_Ventas"] <= 0,
     final["V30D"],
@@ -309,12 +333,37 @@ final["Demanda30"] = (
 final["Demanda30"] = np.ceil(final["Demanda30"]).astype(int)
 
 # =========================================================
-# COMPRA
+# COMPRA BASE
 # =========================================================
-final["Compra"] = (final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
+final["Compra_Base"] = (final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
 
 # =========================================================
-# IMPORTE A COMPRAR = Compra * Costo_Unitario
+# REGLAS DE EMPAQUE
+# =========================================================
+name_norm = norm_name_series(final["Nombre"])
+
+pack_info = name_norm.apply(detect_pack_rule)
+final["Regla_Empaque"] = pack_info.apply(lambda x: x[0] if isinstance(x, tuple) else "")
+final["Multiplo_Empaque"] = pack_info.apply(lambda x: x[1] if isinstance(x, tuple) else np.nan)
+final["Multiplo_Empaque"] = pd.to_numeric(final["Multiplo_Empaque"], errors="coerce")
+
+final["Compra"] = np.where(
+    (final["Compra_Base"] > 0) & (final["Multiplo_Empaque"].fillna(0) > 0),
+    [
+        round_up_to_multiple(qty, int(mult))
+        for qty, mult in zip(final["Compra_Base"], final["Multiplo_Empaque"].fillna(0))
+    ],
+    final["Compra_Base"]
+).astype(int)
+
+final["Empaque_Aplicado"] = np.where(
+    (final["Compra"] != final["Compra_Base"]) & (final["Multiplo_Empaque"].fillna(0) > 0),
+    "Sí",
+    "No"
+)
+
+# =========================================================
+# IMPORTE A COMPRAR = Compra final * Costo_Unitario
 # =========================================================
 final["Importe_Compra"] = final["Compra"] * final["Costo_Unitario"]
 importe_a_comprar_total = float(pd.to_numeric(final["Importe_Compra"], errors="coerce").fillna(0).sum())
@@ -323,7 +372,11 @@ importe_a_comprar_total = float(pd.to_numeric(final["Importe_Compra"], errors="c
 # TABLA
 # =========================================================
 tabla = final[
-    ["Código", "EAN", "Nombre", "Compra", "Stock", "V30D", col_act, col_sig, "Demanda30"]
+    [
+        "Código", "EAN", "Nombre", "Compra_Base", "Multiplo_Empaque",
+        "Empaque_Aplicado", "Compra", "Stock", "V30D", col_act, col_sig,
+        "Demanda30", "Costo_Unitario", "Importe_Compra"
+    ]
 ].rename(columns={
     col_act: f"P90Mes_{mes_actual:02d}",
     col_sig: f"P90Mes_{mes_siguiente:02d}",
@@ -338,17 +391,24 @@ tabla[f"P90Mes_{mes_siguiente:02d}"] = pd.to_numeric(
 ).fillna(0).astype(int)
 
 tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0).astype(int)
+tabla["Compra_Base"] = pd.to_numeric(tabla["Compra_Base"], errors="coerce").fillna(0).astype(int)
+tabla["Compra"] = pd.to_numeric(tabla["Compra"], errors="coerce").fillna(0).astype(int)
+tabla["Multiplo_Empaque"] = pd.to_numeric(tabla["Multiplo_Empaque"], errors="coerce")
+tabla["Costo_Unitario"] = pd.to_numeric(tabla["Costo_Unitario"], errors="coerce")
+tabla["Importe_Compra"] = pd.to_numeric(tabla["Importe_Compra"], errors="coerce")
 
 # =========================================================
 # MÉTRICAS
 # =========================================================
 skus_total = tabla["Código"].nunique()
 skus_compra = tabla.loc[tabla["Compra"] > 0, "Código"].nunique()
+skus_empaque = tabla.loc[tabla["Empaque_Aplicado"] == "Sí", "Código"].nunique()
 
-m1, m2, m3 = st.columns(3)
+m1, m2, m3, m4 = st.columns(4)
 m1.metric("SKUs Erply", f"{skus_total:,}")
 m2.metric("SKUs Compra", f"{skus_compra:,}")
-m3.metric("Importe a comprar (estimado)", f"${importe_a_comprar_total:,.0f}")
+m3.metric("SKUs con empaque aplicado", f"{skus_empaque:,}")
+m4.metric("Importe a comprar (estimado)", f"${importe_a_comprar_total:,.0f}")
 
 # =========================================================
 # UI TABLA
