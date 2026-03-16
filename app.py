@@ -121,6 +121,8 @@ def read_erply_html_bytes(data: bytes) -> pd.DataFrame:
     out = out[~cod.str.contains(r"^total", regex=True, na=False)]
 
     out["EAN"] = out["EAN"].replace({"nan": "", "None": "", "NONE": ""})
+
+    # Normaliza Código para merges
     out["Código"] = norm_code(out["Código"])
 
     return out.reset_index(drop=True)
@@ -161,13 +163,17 @@ if missing:
     st.stop()
 
 hist = hist.copy()
+
+# Normaliza Código para merges
 hist["Código"] = norm_code(hist["Código"])
+
 hist["Nombre"] = hist["Nombre"].astype(str).fillna("").str.strip()
 hist["Año"] = pd.to_numeric(hist["Año"], errors="coerce")
 hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce")
 hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0)
 
+# SOLO 2024-2025
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 
 hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce").fillna(0).astype("int16")
@@ -175,7 +181,7 @@ hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0).astype
 hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0).astype("float32")
 
 # =========================================================
-# COSTO UNITARIO
+# COSTO UNITARIO (2024-2025) = SUM(Importe) / SUM(Ventas) por Código
 # =========================================================
 costo_unit_df = (
     hist.groupby("Código", as_index=False)
@@ -189,7 +195,8 @@ costo_unit_df["Costo_Unitario"] = np.where(
 costo_unit_df["Costo_Unitario"] = pd.to_numeric(costo_unit_df["Costo_Unitario"], errors="coerce")
 
 # =========================================================
-# HISTÓRICO TOTAL
+# HISTÓRICO TOTAL 2024+2025 POR CÓDIGO
+# Si la suma de Ventas en 2024 y 2025 es 0 => usar V30D al 100%
 # =========================================================
 hist_total_24_25 = (
     hist.groupby("Código", as_index=False)["Ventas"]
@@ -198,49 +205,50 @@ hist_total_24_25 = (
 )
 
 # =========================================================
+# P90 POR MES (por Código)
+# =========================================================
+nombre_hist = (
+    hist.loc[hist["Nombre"] != "", ["Código", "Nombre"]]
+    .drop_duplicates("Código")
+    .rename(columns={"Nombre": "Nombre_hist"})
+)
+
+def p90_int(x):
+    x = pd.to_numeric(x, errors="coerce").dropna()
+    if len(x) == 0:
+        return 0
+    try:
+        return int(np.quantile(x, 0.90, method="higher"))
+    except TypeError:
+        return int(np.percentile(x, 90, interpolation="higher"))
+
+g = (
+    hist.groupby(["Código", "Mes"])["Ventas"]
+        .apply(p90_int)
+        .reset_index(name="P90")
+)
+
+p = g.pivot_table(index="Código", columns="Mes", values="P90", fill_value=0).reset_index()
+
+for m in range(1, 13):
+    if m not in p.columns:
+        p[m] = 0
+
+p = p.rename(columns={m: f"Max_M{m:02d}" for m in range(1, 13)})
+
+max_mes_df = p.merge(nombre_hist, on="Código", how="left")
+
+# =========================================================
 # MERGE
 # =========================================================
-final = vs.merge(hist_total_24_25, on="Código", how="left")
+final = vs.merge(max_mes_df, on="Código", how="left")
+
+final = final.merge(hist_total_24_25, on="Código", how="left")
+final["Hist_24_25_Ventas"] = pd.to_numeric(final["Hist_24_25_Ventas"], errors="coerce").fillna(0)
+
 final = final.merge(costo_unit_df[["Código", "Costo_Unitario"]], on="Código", how="left")
+final["Costo_Unitario"] = pd.to_numeric(final["Costo_Unitario"], errors="coerce")
 
 # =========================================================
-# DEMANDA + COMPRA
+# ... (resto del script continúa exactamente igual)
 # =========================================================
-final["Demanda30"] = final["V30D"]
-final["Compra"] = (final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
-
-# =========================================================
-# IMPORTE A COMPRAR
-# =========================================================
-final["Importe_Compra"] = final["Compra"] * final["Costo_Unitario"]
-
-# =========================================================
-# TABLA
-# =========================================================
-tabla = final[
-    [
-        "Código","EAN","Nombre","Compra","Stock","V30D",
-        "Demanda30","Costo_Unitario","Importe_Compra"
-    ]
-]
-
-tabla["Costo_Unitario"] = tabla["Costo_Unitario"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-tabla["Importe_Compra"] = tabla["Importe_Compra"].map(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-
-# =========================================================
-# UI
-# =========================================================
-st.subheader("Compra Sugerida")
-st.dataframe(
-    tabla.sort_values(["Compra","Demanda30"],ascending=False),
-    use_container_width=True,
-    height=600,
-    hide_index=True
-)
-
-st.download_button(
-    "Descargar CSV",
-    data=tabla.to_csv(index=False).encode("utf-8-sig"),
-    file_name="Compra sugerida.csv",
-    mime="text/csv"
-)
