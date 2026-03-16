@@ -121,8 +121,6 @@ def read_erply_html_bytes(data: bytes) -> pd.DataFrame:
     out = out[~cod.str.contains(r"^total", regex=True, na=False)]
 
     out["EAN"] = out["EAN"].replace({"nan": "", "None": "", "NONE": ""})
-
-    # Normaliza Código para merges
     out["Código"] = norm_code(out["Código"])
 
     return out.reset_index(drop=True)
@@ -164,16 +162,13 @@ if missing:
 
 hist = hist.copy()
 
-# Normaliza Código para merges
 hist["Código"] = norm_code(hist["Código"])
-
 hist["Nombre"] = hist["Nombre"].astype(str).fillna("").str.strip()
 hist["Año"] = pd.to_numeric(hist["Año"], errors="coerce")
 hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce")
 hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0)
 
-# SOLO 2024-2025
 hist = hist[hist["Año"].isin([2024, 2025])].copy()
 
 hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce").fillna(0).astype("int16")
@@ -181,7 +176,7 @@ hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0).astype
 hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0).astype("float32")
 
 # =========================================================
-# COSTO UNITARIO (2024-2025) = SUM(Importe) / SUM(Ventas) por Código
+# COSTO UNITARIO
 # =========================================================
 costo_unit_df = (
     hist.groupby("Código", as_index=False)
@@ -195,8 +190,7 @@ costo_unit_df["Costo_Unitario"] = np.where(
 costo_unit_df["Costo_Unitario"] = pd.to_numeric(costo_unit_df["Costo_Unitario"], errors="coerce")
 
 # =========================================================
-# HISTÓRICO TOTAL 2024+2025 POR CÓDIGO
-# Si la suma de Ventas en 2024 y 2025 es 0 => usar V30D al 100%
+# HISTÓRICO TOTAL
 # =========================================================
 hist_total_24_25 = (
     hist.groupby("Código", as_index=False)["Ventas"]
@@ -205,7 +199,7 @@ hist_total_24_25 = (
 )
 
 # =========================================================
-# P90 POR MES (por Código)
+# P90 POR MES
 # =========================================================
 nombre_hist = (
     hist.loc[hist["Nombre"] != "", ["Código", "Nombre"]]
@@ -242,23 +236,14 @@ max_mes_df = p.merge(nombre_hist, on="Código", how="left")
 # MERGE
 # =========================================================
 final = vs.merge(max_mes_df, on="Código", how="left")
-
 final = final.merge(hist_total_24_25, on="Código", how="left")
 final["Hist_24_25_Ventas"] = pd.to_numeric(final["Hist_24_25_Ventas"], errors="coerce").fillna(0)
 
 final = final.merge(costo_unit_df[["Código", "Costo_Unitario"]], on="Código", how="left")
 final["Costo_Unitario"] = pd.to_numeric(final["Costo_Unitario"], errors="coerce")
 
-final["Nombre"] = final["Nombre"].fillna("").astype(str).str.strip()
-final["Nombre_hist"] = final.get("Nombre_hist", "").fillna("").astype(str).str.strip()
-final["Nombre"] = np.where(
-    final["Nombre"] != "",
-    final["Nombre"],
-    np.where(final["Nombre_hist"] != "", final["Nombre_hist"], "(sin nombre)")
-)
-
 # =========================================================
-# FECHA + DEMANDA
+# DEMANDA + COMPRA
 # =========================================================
 tz = ZoneInfo("America/Mazatlan")
 hoy = datetime.now(tz).date()
@@ -273,30 +258,9 @@ mes_siguiente = 1 if mes_actual == 12 else mes_actual + 1
 col_act = f"Max_M{mes_actual:02d}"
 col_sig = f"Max_M{mes_siguiente:02d}"
 
-if col_act not in final.columns:
-    final[col_act] = 0
-if col_sig not in final.columns:
-    final[col_sig] = 0
-
-# =========================================================
-# FORZAR NUMÉRICOS + NaN->0
-# =========================================================
-final["Stock"] = pd.to_numeric(final["Stock"], errors="coerce").fillna(0)
-final["V30D"] = pd.to_numeric(final["V30D"], errors="coerce").fillna(0)
-final[col_act] = pd.to_numeric(final[col_act], errors="coerce").fillna(0)
-final[col_sig] = pd.to_numeric(final[col_sig], errors="coerce").fillna(0)
-
-# =========================================================
-# DEMANDA30
-# Regla:
-# - Si Hist_24_25_Ventas == 0 => Demanda30 = V30D
-# - Si base_hist == 0         => Demanda30 = V30D
-# - Si no                     => mezcla con AmazonSpikeBrake
-# =========================================================
 base_hist = (peso_actual * final[col_act]) + (peso_siguiente * final[col_sig])
 base_hist = pd.to_numeric(base_hist, errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
 
-# AmazonSpikeBrake
 R = np.where(base_hist > 0, final["V30D"] / base_hist, 1.0)
 R = pd.to_numeric(R, errors="coerce")
 R = np.where(np.isfinite(R), R, 1.0)
@@ -314,36 +278,16 @@ demanda_mix = ((1 - alpha_dyn) * base_hist) + (alpha_dyn * V30D_adj)
 final["Demanda30"] = np.where(
     final["Hist_24_25_Ventas"] <= 0,
     final["V30D"],
-    np.where(
-        base_hist <= 0,
-        final["V30D"],
-        demanda_mix
-    )
+    np.where(base_hist <= 0, final["V30D"], demanda_mix)
 )
 
-final["Demanda30"] = (
-    pd.to_numeric(final["Demanda30"], errors="coerce")
-      .replace([np.inf, -np.inf], 0)
-      .fillna(0)
-)
-
-# =========================================================
-# Demanda30: ceil a entero
-# =========================================================
 final["Demanda30"] = np.ceil(final["Demanda30"]).astype(int)
 
-# =========================================================
-# COMPRA BASE
-# =========================================================
 final["Compra_Base"] = (final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
 
-# =========================================================
-# REGLAS DE EMPAQUE
-# =========================================================
 name_norm = norm_name_series(final["Nombre"])
 
 pack_info = name_norm.apply(detect_pack_rule)
-final["Regla_Empaque"] = pack_info.apply(lambda x: x[0] if isinstance(x, tuple) else "")
 final["Multiplo_Empaque"] = pack_info.apply(lambda x: x[1] if isinstance(x, tuple) else np.nan)
 final["Multiplo_Empaque"] = pd.to_numeric(final["Multiplo_Empaque"], errors="coerce")
 
@@ -363,10 +307,9 @@ final["Empaque_Aplicado"] = np.where(
 )
 
 # =========================================================
-# IMPORTE A COMPRAR = Compra final * Costo_Unitario
+# IMPORTE A COMPRAR
 # =========================================================
 final["Importe_Compra"] = final["Compra"] * final["Costo_Unitario"]
-importe_a_comprar_total = float(pd.to_numeric(final["Importe_Compra"], errors="coerce").fillna(0).sum())
 
 # =========================================================
 # TABLA
@@ -381,34 +324,11 @@ tabla = final[
     col_sig: f"P90Mes_{mes_siguiente:02d}",
 })
 
-tabla[f"P90Mes_{mes_actual:02d}"] = pd.to_numeric(
-    tabla[f"P90Mes_{mes_actual:02d}"], errors="coerce"
-).fillna(0).astype(int)
-
-tabla[f"P90Mes_{mes_siguiente:02d}"] = pd.to_numeric(
-    tabla[f"P90Mes_{mes_siguiente:02d}"], errors="coerce"
-).fillna(0).astype(int)
-
-tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0).astype(int)
-tabla["Compra"] = pd.to_numeric(tabla["Compra"], errors="coerce").fillna(0).astype(int)
-tabla["Costo_Unitario"] = pd.to_numeric(tabla["Costo_Unitario"], errors="coerce")
-tabla["Importe_Compra"] = pd.to_numeric(tabla["Importe_Compra"], errors="coerce")
+tabla["Costo_Unitario"] = tabla["Costo_Unitario"].round(2)
+tabla["Importe_Compra"] = tabla["Importe_Compra"].round(2)
 
 # =========================================================
-# MÉTRICAS
-# =========================================================
-skus_total = tabla["Código"].nunique()
-skus_compra = tabla.loc[tabla["Compra"] > 0, "Código"].nunique()
-skus_empaque = final.loc[final["Empaque_Aplicado"] == "Sí", "Código"].nunique()
-
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("SKUs Erply", f"{skus_total:,}")
-m2.metric("SKUs Compra", f"{skus_compra:,}")
-m3.metric("SKUs con empaque aplicado", f"{skus_empaque:,}")
-m4.metric("Importe a comprar (estimado)", f"${importe_a_comprar_total:,.0f}")
-
-# =========================================================
-# UI TABLA
+# UI
 # =========================================================
 st.subheader("Compra Sugerida")
 st.dataframe(
