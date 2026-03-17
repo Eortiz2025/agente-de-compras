@@ -17,9 +17,10 @@ ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días) cuando hay hist�
 
 # Reglas de empaque (prefijo del nombre -> múltiplo)
 PACK_RULES = [
-    ("POLITEC 100M", 12),
+    ("POLITEC 100M", 6),
     ("POLITEC 250M", 6),
     ("POLITEC 30M", 15),
+    ("POLITEC 500M", 3),
     ("PINTURA OLEO ATL 160CC", 3),
     ("PINTURA OLEO ATL 40CC", 3),
     ("HOJA EUROCOLOR", 100),
