@@ -22,6 +22,7 @@ PACK_RULES = [
     ("POLITEC 30M", 15),
     ("PINTURA OLEO ATL 160CC", 3),
     ("PINTURA OLEO ATL 40CC", 3),
+    ("HOJA EUROCOLOR", 100),
     ("PLUMA BIC", 12),
 ]
 
