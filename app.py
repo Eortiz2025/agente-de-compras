@@ -26,7 +26,7 @@ PACK_RULES = [
     ("HOJA OPALINA", 100),
     ("CARTULINA CASCARON", 10),
     ("CARTULINA FLUORESCENTE", 10),
-    ("CARTULINA bristol", 10),
+    ("CARTULINA BRISTOL", 10),
     ("PAPEL CHINA", 10),
     ("PAPEL CREPE", 10),    
     ("PAPEL LUSTRE", 10),
