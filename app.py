@@ -23,6 +23,10 @@ PACK_RULES = [
     ("PINTURA OLEO ATL 160CC", 3),
     ("PINTURA OLEO ATL 40CC", 3),
     ("HOJA EUROCOLOR", 100),
+    ("HOJA OPALINA", 100),
+    ("PAPEL CHINA", 10),
+    ("PAPEL CREPE", 10),    
+    ("PAPEL LUSTRE", 10),
     ("PLUMA BIC", 12),
 ]
 
