@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-APP_VERSION = "2026-03-28-v7.0 REGRESION + ESTACIONALIDAD"
+APP_VERSION = "2026-03-28-v7.1 REGRESION + ESTACIONALIDAD"
 
 MIN_ROTACION_V30D = 3
 COMPRA_MINIMA_UNIDAD = 1
@@ -26,9 +26,7 @@ PESO_ANO_ESTACIONALIDAD = {
 FACTOR_ESTACIONAL_MIN = 0.0
 FACTOR_ESTACIONAL_MAX = 2.5
 
-# Ventana de compra:
-# 0 = solo mes actual
-# 1 = mezcla mes actual + siguiente mes
+# Ventana de compra
 MESES_ANTICIPACION = 1
 PESO_MES_ACTUAL = 0.70
 PESO_MES_SIGUIENTE = 0.30
@@ -118,7 +116,6 @@ def read_erply(file):
 
     out["Código"] = norm_code(out["Código"])
 
-    # quitar filas basura tipo TOTAL
     out = out[~out["Código"].str.contains("TOTAL", na=False)]
     out = out[~out["Nombre"].astype(str).str.upper().str.contains("TOTAL", na=False)]
 
@@ -360,8 +357,7 @@ def build_seasonality(hist):
     hist_seas = hist[hist["Año"].isin(ANOS_ESTACIONALIDAD)].copy()
 
     if hist_seas.empty:
-        out = pd.DataFrame(columns=["Código", "Mes", "Factor_Estacional"])
-        return out
+        return pd.DataFrame(columns=["Código", "Mes", "Factor_Estacional"])
 
     hist_seas["Peso_Ano"] = hist_seas["Año"].map(PESO_ANO_ESTACIONALIDAD).fillna(1.0)
     hist_seas["Ventas_Ponderadas"] = hist_seas["Ventas"] * hist_seas["Peso_Ano"]
@@ -372,7 +368,6 @@ def build_seasonality(hist):
         .rename(columns={"Ventas_Ponderadas": "Ventas_Mes_Pond"})
     )
 
-    # Crear los 12 meses por SKU para no perder meses en cero
     skus = pd.DataFrame({"Código": hist_seas["Código"].unique()})
     meses = pd.DataFrame({"Mes": np.arange(1, 13)})
     base = skus.assign(key=1).merge(meses.assign(key=1), on="key").drop(columns="key")
@@ -388,9 +383,6 @@ def build_seasonality(hist):
 
     seas = seas.merge(total_sku, on="Código", how="left")
 
-    # Índice estacional:
-    # share mensual / share promedio mensual
-    # equivalente a (ventas_mes * 12 / ventas_totales)
     seas["Factor_Estacional"] = np.where(
         seas["Ventas_Total_Pond"] > 0,
         (seas["Ventas_Mes_Pond"] * 12.0) / seas["Ventas_Total_Pond"],
@@ -407,7 +399,7 @@ def build_seasonality(hist):
 
 def build_current_seasonality_for_purchase(seasonality_df):
     if seasonality_df.empty:
-        return pd.DataFrame(columns=["Código", "Factor_Estacional_Compra", "Factor_Estacional_Actual", "Factor_Estacional_Siguiente"])
+        return pd.DataFrame(columns=["Código", "Factor_Estacional_Compra"])
 
     mes_actual = current_month()
     mes_sig = next_month(mes_actual)
@@ -436,7 +428,7 @@ def build_current_seasonality_for_purchase(seasonality_df):
             PESO_MES_SIGUIENTE * out["Factor_Estacional_Siguiente"]
         )
 
-    return out
+    return out[["Código", "Factor_Estacional_Compra"]]
 
 
 # =========================
@@ -513,20 +505,15 @@ def build_final_table(vs, hist):
 
     final["Demanda_Mensual_Historica"] = final["Demanda_Mensual_Historica"].fillna(final["V30D"])
     final["Pred_Regresion_Mensual"] = final["Pred_Regresion_Mensual"].fillna(final["Demanda_Mensual_Historica"])
-
-    final["Factor_Estacional_Actual"] = final["Factor_Estacional_Actual"].fillna(1.0)
-    final["Factor_Estacional_Siguiente"] = final["Factor_Estacional_Siguiente"].fillna(1.0)
     final["Factor_Estacional_Compra"] = final["Factor_Estacional_Compra"].fillna(1.0)
 
     final = apply_regression_safety(final)
 
-    # Demanda base antes de estacionalidad
     final["Demanda_Base_Modelo"] = (
         PESO_REGRESION * final["Pred_Regresion_Usable"] +
         PESO_V30D * final["V30D"]
     ).clip(lower=0)
 
-    # Aplicar estacionalidad
     if USAR_ESTACIONALIDAD:
         final["Demanda_Ajustada_Estacional"] = final["Demanda_Base_Modelo"] * final["Factor_Estacional_Compra"]
     else:
@@ -534,7 +521,6 @@ def build_final_table(vs, hist):
 
     final["Demanda30"] = np.ceil(final["Demanda_Ajustada_Estacional"]).clip(lower=0)
 
-    # El stock manda sobre el modelo
     final["Compra_Base"] = final["Demanda30"] - final["Stock"]
 
     final["Compra_Base"] = np.where(
@@ -545,7 +531,6 @@ def build_final_table(vs, hist):
 
     final["Compra_Base"] = final["Compra_Base"].clip(lower=0)
 
-    # Compra mínima solo si realmente falta inventario
     final["Compra_Base"] = np.where(
         (final["Compra_Base"] == 0) &
         (final["V30D"] > MIN_ROTACION_V30D) &
@@ -585,34 +570,18 @@ def build_final_table(vs, hist):
         "Costo",
         "Importe",
         "Nivel",
-        "Tipo",
-        "Pred_Regresion_Mensual",
-        "Pred_Regresion_Usable",
-        "Demanda_Mensual_Historica",
-        "Demanda_Base_Modelo",
-        "Factor_Estacional_Actual",
-        "Factor_Estacional_Siguiente",
-        "Factor_Estacional_Compra",
-        "Demanda_Ajustada_Estacional",
-        "Meses_Historial",
-        "Cobertura"
+        "Tipo"
     ]].copy()
 
     tabla = tabla.sort_values("Importe", ascending=False).reset_index(drop=True)
 
-    return tabla, final, model, feature_cols, seasonality_full
+    return tabla
 
 
 # =========================
 # UI
 # =========================
 st.title(f"Agente de compras {APP_VERSION}")
-
-st.markdown("""
-### Archivos requeridos
-- **Histórico**: archivo Excel con columnas `Código`, `Ventas`, `Importe`, `Año`, `Mes`
-- **Erply**: archivo `.xls`
-""")
 
 hist_file = st.file_uploader("Histórico", type=["xlsx"])
 erply_file = st.file_uploader("Erply", type=["xls", "xlsx", "html"])
@@ -625,92 +594,21 @@ try:
     vs = read_erply(erply_file)
     hist = prepare_hist(hist)
 
-    tabla, final, model, feature_cols, seasonality_full = build_final_table(vs, hist)
+    tabla = build_final_table(vs, hist)
 
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3 = st.columns(3)
     m1.metric("SKUs", len(tabla))
     m2.metric("SKUs Compra", int((tabla["Compra"] > 0).sum()))
     m3.metric("Importe Total", f"${tabla['Importe'].fillna(0).sum():,.0f}")
-    m4.metric("Demanda Total", f"{tabla['Demanda30'].fillna(0).sum():,.0f}")
 
     st.markdown("### Tabla de compra")
     st.dataframe(tabla, use_container_width=True, height=650)
 
-    st.markdown("### Top 30 por importe")
-    st.dataframe(tabla.head(30), use_container_width=True, height=500)
-
     st.download_button(
         "Descargar CSV",
         tabla.to_csv(index=False).encode("utf-8-sig"),
-        "compra_v7_estacionalidad.csv"
+        "compra_v7_1.csv"
     )
-
-    st.download_button(
-        "Descargar detalle completo",
-        final.to_csv(index=False).encode("utf-8-sig"),
-        "compra_v7_estacionalidad_detalle.csv"
-    )
-
-    if not seasonality_full.empty:
-        st.markdown("### Estacionalidad por SKU y mes")
-        st.dataframe(seasonality_full, use_container_width=True, height=350)
-
-    st.markdown("### Cómo calcula ahora")
-    st.write("""
-1. Lee Código, Nombre, V30D y Stock desde Erply.
-2. Lee Ventas, Importe, Año y Mes desde el histórico.
-3. Entrena una regresión lineal global.
-4. Calcula una predicción mensual por SKU.
-5. Construye estacionalidad automática por SKU usando ventas históricas por mes.
-6. Calcula un factor estacional para compra con:
-   - mes actual
-   - siguiente mes
-7. Ajusta la demanda base con ese factor estacional.
-8. El stock manda sobre el modelo:
-   - si Stock >= Demanda30, compra = 0
-9. Calcula importe y cobertura.
-""")
-
-    st.markdown("### Parámetros actuales")
-    params_df = pd.DataFrame({
-        "Parámetro": [
-            "PESO_REGRESION",
-            "PESO_V30D",
-            "MIN_MESES_PARA_REGRESION",
-            "MAX_FACTOR_SOBRE_HISTORICO",
-            "MAX_FACTOR_SOBRE_V30D",
-            "MESES_ANTICIPACION",
-            "PESO_MES_ACTUAL",
-            "PESO_MES_SIGUIENTE",
-            "FACTOR_ESTACIONAL_MIN",
-            "FACTOR_ESTACIONAL_MAX",
-        ],
-        "Valor": [
-            PESO_REGRESION,
-            PESO_V30D,
-            MIN_MESES_PARA_REGRESION,
-            MAX_FACTOR_SOBRE_HISTORICO,
-            MAX_FACTOR_SOBRE_V30D,
-            MESES_ANTICIPACION,
-            PESO_MES_ACTUAL,
-            PESO_MES_SIGUIENTE,
-            FACTOR_ESTACIONAL_MIN,
-            FACTOR_ESTACIONAL_MAX,
-        ]
-    })
-    st.dataframe(params_df, use_container_width=True)
-
-    if model is not None:
-        coef_df = pd.DataFrame({
-            "Variable": feature_cols,
-            "Coeficiente": model.coef_
-        })
-        coef_df.loc[len(coef_df)] = ["Intercepto", model.intercept_]
-
-        st.markdown("### Coeficientes del modelo")
-        st.dataframe(coef_df, use_container_width=True)
-    else:
-        st.warning("No hubo suficientes datos para entrenar la regresión. Se usó fallback histórico.")
 
 except Exception as e:
     st.error(f"Error al procesar archivos: {e}")
