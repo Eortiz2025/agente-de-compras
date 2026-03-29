@@ -2,9 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-from sklearn.linear_model import LinearRegression
-
-APP_VERSION = "2026-03-28-v6.0 REGRESION"
+APP_VERSION = "2026-03-28-v6.1 REGRESION NUMPY"
 
 PACK_RULES = [
     ("HOJA EUROCOLOR", 100),
@@ -42,6 +40,40 @@ def detect_pack(name):
         if p in n:
             return m
     return np.nan
+
+
+# =========================
+# REGRESION LINEAL CON NUMPY
+# =========================
+class NumpyLinearRegression:
+    def __init__(self):
+        self.coef_ = None
+        self.intercept_ = None
+        self.feature_names_ = None
+        self.is_fitted_ = False
+
+    def fit(self, X, y, feature_names=None):
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        # Agregar intercepto
+        X_design = np.column_stack([np.ones(len(X)), X])
+
+        # Resolver mínimos cuadrados
+        beta, _, _, _ = np.linalg.lstsq(X_design, y, rcond=None)
+
+        self.intercept_ = float(beta[0])
+        self.coef_ = beta[1:]
+        self.feature_names_ = feature_names if feature_names is not None else []
+        self.is_fitted_ = True
+        return self
+
+    def predict(self, X):
+        if not self.is_fitted_:
+            raise ValueError("El modelo no ha sido entrenado todavía.")
+
+        X = np.asarray(X, dtype=float)
+        return self.intercept_ + X @ self.coef_
 
 
 # =========================
@@ -88,16 +120,14 @@ def prepare_hist(hist):
     hist["Año"] = pd.to_numeric(hist["Año"], errors="coerce").fillna(0).astype(int)
     hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce").fillna(0).astype(int)
 
-    # filtrar meses/años válidos
     hist = hist[(hist["Mes"] >= 1) & (hist["Mes"] <= 12) & (hist["Año"] > 0)].copy()
     return hist
 
 
 # =========================
-# COLUMNAS AUXILIARES
+# FEATURES MENSUALES
 # =========================
 def build_monthly_features(hist):
-    # ventas mensuales por SKU
     monthly = (
         hist.groupby(["Código", "Año", "Mes"], as_index=False)
         .agg({
@@ -108,47 +138,35 @@ def build_monthly_features(hist):
         .reset_index(drop=True)
     )
 
-    # fecha mensual para ordenar
     monthly["Fecha"] = pd.to_datetime(
         monthly["Año"].astype(str) + "-" + monthly["Mes"].astype(str).str.zfill(2) + "-01"
     )
 
     monthly = monthly.sort_values(["Código", "Fecha"]).reset_index(drop=True)
 
-    # lags mensuales por SKU
     monthly["lag1"] = monthly.groupby("Código")["Ventas"].shift(1)
     monthly["lag2"] = monthly.groupby("Código")["Ventas"].shift(2)
     monthly["lag3"] = monthly.groupby("Código")["Ventas"].shift(3)
-
-    # promedio móvil
     monthly["ma3"] = monthly[["lag1", "lag2", "lag3"]].mean(axis=1)
 
-    # target = ventas del mes actual
-    # features = meses previos
     train = monthly.dropna(subset=["lag1", "lag2", "lag3"]).copy()
-
     return monthly, train
 
 
 def train_global_regression(train):
-    # modelo global para todos los SKUs
-    # aprende relación entre últimos meses y venta del mes actual
     feature_cols = ["lag1", "lag2", "lag3", "ma3", "Mes"]
-
-    X = train[feature_cols].fillna(0)
-    y = train["Ventas"].fillna(0)
 
     if len(train) < 20:
         return None, feature_cols
 
-    model = LinearRegression()
-    model.fit(X, y)
+    X = train[feature_cols].fillna(0).values
+    y = train["Ventas"].fillna(0).values
 
+    model = NumpyLinearRegression().fit(X, y, feature_names=feature_cols)
     return model, feature_cols
 
 
 def predict_next_month_per_sku(monthly, model, feature_cols):
-    # para cada SKU tomamos sus últimos 3 meses y predecimos el siguiente
     if model is None:
         return pd.DataFrame(columns=["Código", "Pred_Regresion_Mensual"])
 
@@ -162,7 +180,6 @@ def predict_next_month_per_sku(monthly, model, feature_cols):
         last3 = g["Ventas"].iloc[-3] if len(g) >= 3 else 0
         ma3 = np.mean([last1, last2, last3])
 
-        # siguiente mes
         last_fecha = g["Fecha"].iloc[-1]
         next_month = (last_fecha.month % 12) + 1
 
@@ -174,7 +191,7 @@ def predict_next_month_per_sku(monthly, model, feature_cols):
             "Mes": next_month
         }])
 
-        pred = model.predict(X_pred[feature_cols])[0]
+        pred = model.predict(X_pred[feature_cols].fillna(0).values)[0]
         pred = max(0, pred)
 
         rows.append({
@@ -189,6 +206,7 @@ def predict_next_month_per_sku(monthly, model, feature_cols):
 # COSTO
 # =========================
 def build_cost(hist):
+    # prioriza 2025; si no existe costo, luego se rellena
     cost = (
         hist[hist["Año"] == 2025]
         .groupby("Código")
@@ -206,7 +224,7 @@ def build_cost(hist):
 
 
 # =========================
-# DEMANDA ESCOLAR (SE CONSERVA COMO APOYO)
+# DEMANDA ESCOLAR COMO APOYO
 # =========================
 def build_school_demand(hist):
     hist_escolar = hist[hist["Mes"].between(4, 10)]
@@ -282,7 +300,21 @@ def build_v04_v05(hist):
 
 
 # =========================
-# MODELO FINAL DE DEMANDA
+# FALLBACK DE COSTO
+# =========================
+def fill_missing_costs_with_global_average(final, hist):
+    # costo promedio general 2025
+    hist_2025 = hist[hist["Año"] == 2025].copy()
+    total_ventas = hist_2025["Ventas"].sum()
+    total_importe = hist_2025["Importe"].sum()
+
+    global_cost = (total_importe / total_ventas) if total_ventas > 0 else 0
+    final["Costo"] = final["Costo"].fillna(global_cost).fillna(0)
+    return final
+
+
+# =========================
+# MODELO FINAL
 # =========================
 def build_final_table(vs, hist):
     cost = build_cost(hist)
@@ -301,7 +333,9 @@ def build_final_table(vs, hist):
 
     final["V04_2025"] = final["V04_2025"].fillna(0)
     final["V05_2025"] = final["V05_2025"].fillna(0)
-    final["Costo"] = final["Costo"].fillna(0)
+    final["Tipo"] = final["Tipo"].fillna("SIN_HISTORICO")
+
+    final = fill_missing_costs_with_global_average(final, hist)
 
     # fallback histórico
     final["Demanda_Mensual_Historica"] = final["Demanda_Mensual_Historica"].fillna(final["V30D"])
@@ -309,37 +343,29 @@ def build_final_table(vs, hist):
     # fallback regresión
     final["Pred_Regresion_Mensual"] = final["Pred_Regresion_Mensual"].fillna(final["Demanda_Mensual_Historica"])
 
-    # mezcla recomendada:
-    # 70% regresión + 30% señal reciente V30D
-    # esto hace el modelo más automático sin perder reacción al corto plazo
+    # mezcla final recomendada
     final["Demanda30"] = np.ceil(
         0.70 * final["Pred_Regresion_Mensual"] +
         0.30 * final["V30D"]
-    )
+    ).clip(lower=0)
 
-    final["Demanda30"] = final["Demanda30"].clip(lower=0)
-
-    # compra base
     final["Compra_Base"] = (final["Demanda30"] - final["Stock"]).clip(lower=0)
 
-    # compra mínima por rotación reciente
     final["Compra_Base"] = np.where(
         (final["Compra_Base"] == 0) & (final["V30D"] > MIN_ROTACION_V30D),
         COMPRA_MINIMA_UNIDAD,
         final["Compra_Base"]
     )
 
-    # múltiplos
     final["Multiplo"] = final["Nombre"].apply(detect_pack)
+
     final["Compra"] = [
         round_up(q, m)
         for q, m in zip(final["Compra_Base"], final["Multiplo"])
     ]
 
-    # importe
     final["Importe"] = final["Compra"] * final["Costo"]
 
-    # cobertura
     final["Cobertura"] = np.where(
         final["Demanda30"] > 0,
         final["Stock"] / final["Demanda30"],
@@ -356,7 +382,6 @@ def build_final_table(vs, hist):
 
     final["Nivel"] = final["Cobertura"].apply(nivel)
 
-    # tabla final
     tabla = final[[
         "Código",
         "Nombre",
@@ -377,7 +402,7 @@ def build_final_table(vs, hist):
 
     tabla = tabla.sort_values("Importe", ascending=False).reset_index(drop=True)
 
-    return tabla, final, model
+    return tabla, final, model, feature_cols
 
 
 # =========================
@@ -387,78 +412,76 @@ st.title(f"Agente de compras {APP_VERSION}")
 
 st.markdown("""
 ### Archivos requeridos
-- **Histórico**: archivo Excel con columnas como `Código`, `Ventas`, `Importe`, `Año`, `Mes`
-- **Erply**: archivo `.xls` exportado desde tu sistema
+- **Histórico**: archivo Excel con columnas `Código`, `Ventas`, `Importe`, `Año`, `Mes`
+- **Erply**: archivo `.xls`
 """)
 
 hist_file = st.file_uploader("Histórico", type=["xlsx"])
-erply_file = st.file_uploader("Erply", type=["xls"])
+erply_file = st.file_uploader("Erply", type=["xls", "xlsx", "html"])
 
 if hist_file is None or erply_file is None:
     st.stop()
 
-# lectura
-hist = pd.read_excel(hist_file)
-vs = read_erply(erply_file)
-hist = prepare_hist(hist)
+try:
+    hist = pd.read_excel(hist_file)
+    vs = read_erply(erply_file)
+    hist = prepare_hist(hist)
 
-# modelo final
-tabla, final, model = build_final_table(vs, hist)
+    tabla, final, model, feature_cols = build_final_table(vs, hist)
 
-# métricas
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("SKUs", len(tabla))
-m2.metric("SKUs Compra", int((tabla["Compra"] > 0).sum()))
-m3.metric("Importe Total", f"${tabla['Importe'].fillna(0).sum():,.0f}")
-m4.metric("Demanda Total", f"{tabla['Demanda30'].fillna(0).sum():,.0f}")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("SKUs", len(tabla))
+    m2.metric("SKUs Compra", int((tabla["Compra"] > 0).sum()))
+    m3.metric("Importe Total", f"${tabla['Importe'].fillna(0).sum():,.0f}")
+    m4.metric("Demanda Total", f"{tabla['Demanda30'].fillna(0).sum():,.0f}")
 
-st.markdown("### Tabla de compra")
-st.dataframe(tabla, use_container_width=True, height=650)
+    st.markdown("### Tabla de compra")
+    st.dataframe(tabla, use_container_width=True, height=650)
 
-# top diferencias útiles
-st.markdown("### Top 30 por importe")
-st.dataframe(tabla.head(30), use_container_width=True, height=500)
+    st.markdown("### Top 30 por importe")
+    st.dataframe(tabla.head(30), use_container_width=True, height=500)
 
-# descarga principal
-st.download_button(
-    "Descargar CSV",
-    tabla.to_csv(index=False).encode("utf-8-sig"),
-    "compra_v6_regresion.csv"
-)
+    st.download_button(
+        "Descargar CSV",
+        tabla.to_csv(index=False).encode("utf-8-sig"),
+        "compra_v6_1_regresion_numpy.csv"
+    )
 
-# descarga detalle completo
-st.download_button(
-    "Descargar detalle completo",
-    final.to_csv(index=False).encode("utf-8-sig"),
-    "compra_v6_regresion_detalle.csv"
-)
+    st.download_button(
+        "Descargar detalle completo",
+        final.to_csv(index=False).encode("utf-8-sig"),
+        "compra_v6_1_regresion_numpy_detalle.csv"
+    )
 
-# información del modelo
-st.markdown("### Cómo calcula ahora")
-st.write("""
+    st.markdown("### Cómo calcula ahora")
+    st.write("""
 1. Extrae **Código, Nombre, V30D y Stock** desde Erply.
 2. Extrae **Ventas, Importe, Año y Mes** desde el histórico.
 3. Construye una serie mensual por SKU.
-4. Entrena una **regresión lineal global** usando:
-   - ventas del mes previo (`lag1`)
-   - ventas de 2 meses previos (`lag2`)
-   - ventas de 3 meses previos (`lag3`)
-   - promedio móvil de 3 meses (`ma3`)
-   - mes del año
+4. Entrena una **regresión lineal global con numpy** usando:
+   - `lag1`
+   - `lag2`
+   - `lag3`
+   - `ma3`
+   - `Mes`
 5. Predice la demanda mensual siguiente por SKU.
 6. Mezcla:
    - **70% predicción de regresión**
    - **30% V30D**
-7. Resta stock actual y aplica reglas de compra.
+7. Calcula compra, importe y cobertura.
 """)
 
-if model is not None:
-    st.markdown("### Coeficientes del modelo")
-    coef_df = pd.DataFrame({
-        "Variable": ["lag1", "lag2", "lag3", "ma3", "Mes"],
-        "Coeficiente": model.coef_
-    })
-    coef_df.loc[len(coef_df)] = ["Intercepto", model.intercept_]
-    st.dataframe(coef_df, use_container_width=True)
-else:
-    st.warning("No hubo suficientes datos para entrenar la regresión. Se usaron fallbacks históricos.")
+    if model is not None:
+        coef_df = pd.DataFrame({
+            "Variable": feature_cols,
+            "Coeficiente": model.coef_
+        })
+        coef_df.loc[len(coef_df)] = ["Intercepto", model.intercept_]
+
+        st.markdown("### Coeficientes del modelo")
+        st.dataframe(coef_df, use_container_width=True)
+    else:
+        st.warning("No hubo suficientes datos para entrenar la regresión. Se usó fallback histórico.")
+
+except Exception as e:
+    st.error(f"Error al procesar archivos: {e}")
