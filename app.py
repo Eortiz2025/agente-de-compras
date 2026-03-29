@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-APP_VERSION = "2026-03-28-v6.2 REGRESION SEGURA SIN MULTIPLOS"
+APP_VERSION = "2026-03-28-v6.3 STOCK MANDA"
 
 MIN_ROTACION_V30D = 3
 COMPRA_MINIMA_UNIDAD = 1
@@ -13,8 +13,8 @@ PESO_V30D = 0.30
 
 # reglas de seguridad para regresión
 MIN_MESES_PARA_REGRESION = 3
-MAX_FACTOR_SOBRE_HISTORICO = 2.5   # la regresión no puede ser > 2.5x demanda histórica fallback
-MAX_FACTOR_SOBRE_V30D = 3.0        # la regresión no puede ser > 3x V30D si V30D existe
+MAX_FACTOR_SOBRE_HISTORICO = 2.5
+MAX_FACTOR_SOBRE_V30D = 3.0
 
 st.set_page_config(page_title="Agente de compras", layout="wide")
 
@@ -92,7 +92,12 @@ def read_erply(file):
     })
 
     out["Código"] = norm_code(out["Código"])
-    return out
+
+    # quitar filas basura tipo total/resumen
+    out = out[~out["Código"].str.contains("TOTAL", na=False)]
+    out = out[~out["Nombre"].astype(str).str.upper().str.contains("TOTAL", na=False)]
+
+    return out.reset_index(drop=True)
 
 
 # =========================
@@ -135,7 +140,6 @@ def build_monthly_features(hist):
     monthly["lag3"] = monthly.groupby("Código")["Ventas"].shift(3)
     monthly["ma3"] = monthly[["lag1", "lag2", "lag3"]].mean(axis=1)
 
-    # mes cíclico para no meter sesgo lineal bruto
     monthly["Mes_sin"] = np.sin(2 * np.pi * monthly["Mes"] / 12)
     monthly["Mes_cos"] = np.cos(2 * np.pi * monthly["Mes"] / 12)
 
@@ -203,7 +207,6 @@ def predict_next_month_per_sku(monthly, model, feature_cols):
 # COSTO
 # =========================
 def build_cost(hist):
-    # costo por SKU usando primero 2025
     cost_2025 = (
         hist[hist["Año"] == 2025]
         .groupby("Código")
@@ -216,7 +219,6 @@ def build_cost(hist):
         np.nan
     )
 
-    # fallback: todos los años
     cost_all = (
         hist.groupby("Código")
         .agg({"Ventas": "sum", "Importe": "sum"})
@@ -333,46 +335,38 @@ def apply_regression_safety(final):
     final = final.copy()
 
     final["Meses_Historial"] = final["Meses_Historial"].fillna(0)
-
-    # Base segura inicial
     final["Pred_Regresion_Usable"] = final["Pred_Regresion_Mensual"]
 
-    # Si no hay suficientes meses, usar histórico
     final["Pred_Regresion_Usable"] = np.where(
         final["Meses_Historial"] >= MIN_MESES_PARA_REGRESION,
         final["Pred_Regresion_Usable"],
         final["Demanda_Mensual_Historica"]
     )
 
-    # Tope contra histórico
     limite_hist = np.where(
         final["Demanda_Mensual_Historica"] > 0,
         final["Demanda_Mensual_Historica"] * MAX_FACTOR_SOBRE_HISTORICO,
         np.nan
     )
 
-    # Tope contra V30D
     limite_v30d = np.where(
         final["V30D"] > 0,
         final["V30D"] * MAX_FACTOR_SOBRE_V30D,
         np.nan
     )
 
-    # Si existen ambos límites, usar el menor
     limite_final = np.where(
         ~np.isnan(limite_hist) & ~np.isnan(limite_v30d),
         np.minimum(limite_hist, limite_v30d),
         np.where(~np.isnan(limite_hist), limite_hist, limite_v30d)
     )
 
-    # Aplicar tope cuando exista
     final["Pred_Regresion_Usable"] = np.where(
         ~np.isnan(limite_final),
         np.minimum(final["Pred_Regresion_Usable"], limite_final),
         final["Pred_Regresion_Usable"]
     )
 
-    # nunca negativa
     final["Pred_Regresion_Usable"] = final["Pred_Regresion_Usable"].clip(lower=0)
 
     return final
@@ -402,38 +396,41 @@ def build_final_table(vs, hist):
 
     final = fill_missing_costs_with_global_average(final, hist)
 
-    # fallback histórico
     final["Demanda_Mensual_Historica"] = final["Demanda_Mensual_Historica"].fillna(final["V30D"])
-
-    # fallback regresión
     final["Pred_Regresion_Mensual"] = final["Pred_Regresion_Mensual"].fillna(final["Demanda_Mensual_Historica"])
 
-    # aplicar seguridades
     final = apply_regression_safety(final)
 
-    # mezcla final
     final["Demanda30"] = np.ceil(
         PESO_REGRESION * final["Pred_Regresion_Usable"] +
         PESO_V30D * final["V30D"]
     ).clip(lower=0)
 
-    # compra base
-    final["Compra_Base"] = (final["Demanda30"] - final["Stock"]).clip(lower=0)
+    # =========================
+    # STOCK MANDA SOBRE EL MODELO
+    # =========================
+    final["Compra_Base"] = final["Demanda30"] - final["Stock"]
 
-    # compra mínima si hay movimiento reciente
     final["Compra_Base"] = np.where(
-        (final["Compra_Base"] == 0) & (final["V30D"] > MIN_ROTACION_V30D),
+        final["Stock"] >= final["Demanda30"],
+        0,
+        final["Compra_Base"]
+    )
+
+    final["Compra_Base"] = final["Compra_Base"].clip(lower=0)
+
+    final["Compra_Base"] = np.where(
+        (final["Compra_Base"] == 0) &
+        (final["V30D"] > MIN_ROTACION_V30D) &
+        (final["Stock"] < final["Demanda30"]),
         COMPRA_MINIMA_UNIDAD,
         final["Compra_Base"]
     )
 
-    # sin múltiplos
     final["Compra"] = final["Compra_Base"].apply(round_normal)
 
-    # importe
     final["Importe"] = final["Compra"] * final["Costo"]
 
-    # cobertura
     final["Cobertura"] = np.where(
         final["Demanda30"] > 0,
         final["Stock"] / final["Demanda30"],
@@ -514,35 +511,26 @@ try:
     st.download_button(
         "Descargar CSV",
         tabla.to_csv(index=False).encode("utf-8-sig"),
-        "compra_v6_2_regresion_segura_sin_multiplos.csv"
+        "compra_v6_3_stock_manda.csv"
     )
 
     st.download_button(
         "Descargar detalle completo",
         final.to_csv(index=False).encode("utf-8-sig"),
-        "compra_v6_2_regresion_segura_sin_multiplos_detalle.csv"
+        "compra_v6_3_stock_manda_detalle.csv"
     )
 
     st.markdown("### Cómo calcula ahora")
     st.write("""
-1. Lee **Código, Nombre, V30D y Stock** desde Erply.
-2. Lee **Ventas, Importe, Año y Mes** desde el histórico.
-3. Arma series mensuales por SKU.
-4. Entrena una regresión lineal global con:
-   - `lag1`
-   - `lag2`
-   - `lag3`
-   - `ma3`
-   - `Mes_sin`
-   - `Mes_cos`
-5. Predice la demanda mensual siguiente por SKU.
-6. Si el SKU tiene menos de 3 meses con historial, usa fallback histórico.
-7. Aplica topes de seguridad para evitar sobrepredicción.
-8. Mezcla:
-   - 70% regresión usable
-   - 30% V30D
-9. Resta stock para calcular compra.
-10. Ya no usa múltiplos.
+1. Lee Código, Nombre, V30D y Stock desde Erply.
+2. Lee Ventas, Importe, Año y Mes desde el histórico.
+3. Entrena una regresión lineal global con datos mensuales.
+4. Aplica seguridades a la regresión.
+5. Mezcla 70% regresión usable y 30% V30D.
+6. Calcula demanda.
+7. El stock manda sobre el modelo:
+   - si Stock >= Demanda30, compra = 0
+8. Solo permite compra mínima si todavía falta inventario.
 """)
 
     if model is not None:
