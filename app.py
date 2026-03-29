@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-APP_VERSION = "2026-03-28-v7.1 REGRESION + ESTACIONALIDAD"
+APP_VERSION = "2026-03-28-v7.2 REGRESION + ESTACIONALIDAD"
 
 MIN_ROTACION_V30D = 3
 COMPRA_MINIMA_UNIDAD = 1
@@ -540,7 +540,8 @@ def build_final_table(vs, hist):
     )
 
     final["Compra"] = final["Compra_Base"].apply(round_normal)
-    final["Importe"] = final["Compra"] * final["Costo"]
+    final["Costo"] = final["Costo"].round(2)
+    final["Importe"] = (final["Compra"] * final["Costo"]).round(2)
 
     final["Cobertura"] = np.where(
         final["Demanda30"] > 0,
@@ -573,6 +574,9 @@ def build_final_table(vs, hist):
         "Tipo"
     ]].copy()
 
+    tabla["Costo"] = tabla["Costo"].round(2)
+    tabla["Importe"] = tabla["Importe"].round(2)
+
     tabla = tabla.sort_values("Importe", ascending=False).reset_index(drop=True)
 
     return tabla
@@ -599,7 +603,7 @@ try:
     m1, m2, m3 = st.columns(3)
     m1.metric("SKUs", len(tabla))
     m2.metric("SKUs Compra", int((tabla["Compra"] > 0).sum()))
-    m3.metric("Importe Total", f"${tabla['Importe'].fillna(0).sum():,.0f}")
+    m3.metric("Importe Total", f"${tabla['Importe'].fillna(0).sum():,.2f}")
 
     st.markdown("### Tabla de compra")
     st.dataframe(tabla, use_container_width=True, height=650)
@@ -607,7 +611,7 @@ try:
     st.download_button(
         "Descargar CSV",
         tabla.to_csv(index=False).encode("utf-8-sig"),
-        "compra_v7_1.csv"
+        "compra_v7_2.csv"
     )
 
 except Exception as e:
