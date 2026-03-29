@@ -7,24 +7,13 @@ import calendar
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# =========================
-# CONFIG + VERSION
-# =========================
-APP_VERSION = "2026-03-28-v5.0 DEMANDA ESCOLAR + DELTA"
+APP_VERSION = "2026-03-28-v5.1 ESTABLE"
 
-ALPHA_V30D = 0.25
+ALPHA_V30D = 0.3
 
 PACK_RULES = [
-    ("POLITEC 100M", 6),
-    ("POLITEC 250M", 6),
-    ("POLITEC 30M", 15),
-    ("POLITEC 500M", 3),
-    ("PINTURA OLEO ATL 40CC", 3),
     ("HOJA EUROCOLOR", 100),
     ("HOJA OPALINA", 100),
-    ("CARTULINA CASCARON", 10),
-    ("CARTULINA FLUORESCENTE", 10),
-    ("CARTULINA BRISTOL", 25),
     ("PAPEL CHINA", 100),
     ("PAPEL CREPE", 10),
     ("PAPEL LUSTRE", 25),
@@ -39,11 +28,8 @@ st.set_page_config(page_title="Agente de compras", layout="wide")
 def norm_code(s):
     return s.astype(str).str.strip().str.upper()
 
-def norm_name(s):
-    return s.astype(str).fillna("").str.strip().str.upper()
-
 def round_up(qty, mult):
-    if pd.isna(qty) or qty <= 0 or mult <= 0:
+    if pd.isna(qty) or qty <= 0:
         return 0
     return int(np.ceil(qty / mult) * mult)
 
@@ -55,10 +41,41 @@ def detect_pack(name):
     return np.nan
 
 # =========================
+# ERPLY PARSER (ESTABLE)
+# =========================
+def read_erply(file):
+    tables = pd.read_html(file, header=None)
+    df = max(tables, key=lambda x: x.shape[0])
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0] for c in df.columns]
+
+    def is_code(x):
+        s = str(x).strip()
+        return len(s) >= 3 and not s.lower().startswith("codigo")
+
+    start = 0
+    for i in range(min(100, len(df))):
+        if is_code(df.iloc[i,1]):
+            start = i
+            break
+
+    df = df.iloc[start:].reset_index(drop=True)
+
+    out = pd.DataFrame({
+        "Código": df.iloc[:,1].astype(str).str.strip(),
+        "Nombre": df.iloc[:,3].astype(str).fillna(""),
+        "V30D": pd.to_numeric(df.iloc[:,4], errors="coerce").fillna(0),
+        "Stock": pd.to_numeric(df.iloc[:,6], errors="coerce").fillna(0),
+    })
+
+    out["Código"] = norm_code(out["Código"])
+    return out
+
+# =========================
 # UI
 # =========================
 st.title("Agente de compras V5")
-st.caption(APP_VERSION)
 
 hist_file = st.file_uploader("Histórico", type=["xlsx"])
 erply_file = st.file_uploader("Erply", type=["xls"])
@@ -66,36 +83,24 @@ erply_file = st.file_uploader("Erply", type=["xls"])
 if hist_file is None or erply_file is None:
     st.stop()
 
-# =========================
-# LOAD
-# =========================
 hist = pd.read_excel(hist_file)
-vs = pd.read_html(erply_file)[0]
-
-vs = vs.rename(columns={
-    vs.columns[1]: "Código",
-    vs.columns[3]: "Nombre",
-    vs.columns[4]: "V30D",
-    vs.columns[6]: "Stock"
-})
+vs = read_erply(erply_file)
 
 hist["Código"] = norm_code(hist["Código"])
-vs["Código"] = norm_code(vs["Código"])
-
 hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0)
 
 # =========================
-# COSTO UNITARIO (2025)
+# COSTO 2025
 # =========================
 cost = hist[hist["Año"]==2025].groupby("Código").agg({
     "Ventas":"sum","Importe":"sum"
 }).reset_index()
 
-cost["Costo_Unitario"] = cost["Importe"] / cost["Ventas"]
+cost["Costo"] = cost["Importe"]/cost["Ventas"]
 
 # =========================
-# DEMANDA ESCOLAR V5
+# DEMANDA ESCOLAR
 # =========================
 hist_escolar = hist[hist["Mes"].between(4,10)]
 
@@ -122,19 +127,17 @@ def demanda(row):
         return 0.9*row["Dem_2025"] + 0.1*row["Dem_2024"]
     elif row["Tipo"]=="ALINEADO":
         return 0.75*row["Dem_2025"] + 0.25*row["Dem_2024"]
-    elif row["Tipo"]=="SUBESTIMADO":
-        return 0.6*row["Dem_2025"] + 0.4*row["Dem_2024"]
     else:
-        return row["Dem_2025"]
+        return 0.6*row["Dem_2025"] + 0.4*row["Dem_2024"]
 
 df["Demanda_Base"] = df.apply(demanda, axis=1)
-df["Demanda_Mensual"] = df["Demanda_Base"] / 7
+df["Demanda_Mensual"] = df["Demanda_Base"]/7
 
 # =========================
 # MERGE
 # =========================
 final = vs.merge(df, on="Código", how="left")
-final = final.merge(cost[["Código","Costo_Unitario"]], on="Código", how="left")
+final = final.merge(cost[["Código","Costo"]], on="Código", how="left")
 
 final["Demanda_Mensual"] = final["Demanda_Mensual"].fillna(final["V30D"])
 
@@ -142,8 +145,8 @@ final["Demanda_Mensual"] = final["Demanda_Mensual"].fillna(final["V30D"])
 # DEMANDA FINAL
 # =========================
 final["Demanda30"] = np.ceil(
-    0.7 * final["Demanda_Mensual"] +
-    0.3 * final["V30D"]
+    (1-ALPHA_V30D)*final["Demanda_Mensual"] +
+    ALPHA_V30D*final["V30D"]
 )
 
 # =========================
@@ -151,19 +154,18 @@ final["Demanda30"] = np.ceil(
 # =========================
 final["Compra_Base"] = (final["Demanda30"] - final["Stock"]).clip(lower=0)
 
-name_norm = norm_name(final["Nombre"])
-final["Multiplo"] = name_norm.apply(detect_pack)
+final["Multiplo"] = final["Nombre"].apply(detect_pack)
 
 final["Compra"] = np.where(
-    (final["Compra_Base"] > 0) & (final["Multiplo"].fillna(0) > 0),
-    [round_up(q, m) for q, m in zip(final["Compra_Base"], final["Multiplo"].fillna(0))],
+    (final["Compra_Base"]>0)&(final["Multiplo"].fillna(0)>0),
+    [round_up(q,m) for q,m in zip(final["Compra_Base"],final["Multiplo"].fillna(0))],
     final["Compra_Base"]
 )
 
 # =========================
 # IMPORTE
 # =========================
-final["Importe"] = final["Compra"] * final["Costo_Unitario"]
+final["Importe"] = final["Compra"]*final["Costo"]
 
 # =========================
 # COBERTURA
@@ -179,13 +181,12 @@ def nivel(c):
 final["Nivel"] = final["Cobertura"].apply(nivel)
 
 # =========================
-# TABLA FINAL
+# TABLA
 # =========================
 tabla = final[[
     "Código","Nombre","Stock",
     "Demanda30","Compra",
-    "Costo_Unitario","Importe",
-    "Nivel","Tipo"
+    "Costo","Importe","Nivel","Tipo"
 ]]
 
 tabla = tabla.sort_values("Importe", ascending=False)
@@ -205,6 +206,6 @@ st.dataframe(tabla, use_container_width=True, height=600)
 
 st.download_button(
     "Descargar CSV",
-    data=tabla.to_csv(index=False).encode("utf-8-sig"),
-    file_name="Compra_v5.csv"
+    tabla.to_csv(index=False).encode("utf-8-sig"),
+    "compra_v5.csv"
 )
