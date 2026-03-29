@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-APP_VERSION = "v7.2 REGRESION"
+APP_VERSION = "v8.0 RIDGE + FEATURES"
 
 MIN_ROTACION_V30D = 3
 COMPRA_MINIMA_UNIDAD = 1
@@ -15,6 +15,10 @@ PESO_V30D = 0.30
 MIN_MESES_PARA_REGRESION = 3
 MAX_FACTOR_SOBRE_HISTORICO = 2.5
 MAX_FACTOR_SOBRE_V30D = 3.0
+
+# Ridge
+RIDGE_ALPHA = 3.0
+MIN_FILAS_ENTRENAMIENTO = 30
 
 # Estacionalidad
 USAR_ESTACIONALIDAD = True
@@ -55,11 +59,16 @@ def next_month(m):
     return 1 if m == 12 else m + 1
 
 
+def safe_div(a, b):
+    return np.where(np.abs(b) > 1e-9, a / b, 0.0)
+
+
 # =========================
-# REGRESION LINEAL CON NUMPY
+# RIDGE REGRESSION CON NUMPY
 # =========================
-class NumpyLinearRegression:
-    def __init__(self):
+class NumpyRidgeRegression:
+    def __init__(self, alpha=1.0):
+        self.alpha = alpha
         self.coef_ = None
         self.intercept_ = None
         self.feature_names_ = None
@@ -69,8 +78,23 @@ class NumpyLinearRegression:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
 
+        if X.ndim != 2:
+            raise ValueError("X debe ser 2D.")
+        if y.ndim != 1:
+            raise ValueError("y debe ser 1D.")
+        if len(X) != len(y):
+            raise ValueError("X e y deben tener la misma longitud.")
+
         X_design = np.column_stack([np.ones(len(X)), X])
-        beta, _, _, _ = np.linalg.lstsq(X_design, y, rcond=None)
+        n_features = X_design.shape[1]
+
+        I = np.eye(n_features)
+        I[0, 0] = 0.0  # no penalizar intercepto
+
+        XtX = X_design.T @ X_design
+        Xty = X_design.T @ y
+
+        beta = np.linalg.solve(XtX + self.alpha * I, Xty)
 
         self.intercept_ = float(beta[0])
         self.coef_ = beta[1:]
@@ -82,6 +106,8 @@ class NumpyLinearRegression:
         if not self.is_fitted_:
             raise ValueError("El modelo no ha sido entrenado.")
         X = np.asarray(X, dtype=float)
+        if X.ndim != 2:
+            raise ValueError("X debe ser 2D.")
         return self.intercept_ + X @ self.coef_
 
 
@@ -138,7 +164,7 @@ def prepare_hist(hist):
 
 
 # =========================
-# FEATURES MENSUALES
+# FEATURES MENSUALES MEJORADAS
 # =========================
 def build_monthly_features(hist):
     monthly = (
@@ -157,28 +183,72 @@ def build_monthly_features(hist):
 
     monthly = monthly.sort_values(["Código", "Fecha"]).reset_index(drop=True)
 
-    monthly["lag1"] = monthly.groupby("Código")["Ventas"].shift(1)
-    monthly["lag2"] = monthly.groupby("Código")["Ventas"].shift(2)
-    monthly["lag3"] = monthly.groupby("Código")["Ventas"].shift(3)
+    g = monthly.groupby("Código")["Ventas"]
+
+    monthly["lag1"] = g.shift(1)
+    monthly["lag2"] = g.shift(2)
+    monthly["lag3"] = g.shift(3)
+    monthly["lag6"] = g.shift(6)
+    monthly["lag12"] = g.shift(12)
+
     monthly["ma3"] = monthly[["lag1", "lag2", "lag3"]].mean(axis=1)
+    monthly["std3"] = monthly[["lag1", "lag2", "lag3"]].std(axis=1)
+    monthly["max3"] = monthly[["lag1", "lag2", "lag3"]].max(axis=1)
+    monthly["min3"] = monthly[["lag1", "lag2", "lag3"]].min(axis=1)
+
+    monthly["diff1"] = monthly["lag1"] - monthly["lag2"]
+    monthly["diff2"] = monthly["lag2"] - monthly["lag3"]
+
+    monthly["ratio1"] = safe_div(monthly["lag1"], monthly["lag2"] + 1)
+    monthly["ratio2"] = safe_div(monthly["lag2"], monthly["lag3"] + 1)
+
+    monthly["trend_idx"] = monthly.groupby("Código").cumcount() + 1
 
     monthly["Mes_sin"] = np.sin(2 * np.pi * monthly["Mes"] / 12)
     monthly["Mes_cos"] = np.cos(2 * np.pi * monthly["Mes"] / 12)
 
     train = monthly.dropna(subset=["lag1", "lag2", "lag3"]).copy()
+
+    # Limpieza numérica
+    numeric_cols = [
+        "lag1", "lag2", "lag3", "lag6", "lag12",
+        "ma3", "std3", "max3", "min3",
+        "diff1", "diff2", "ratio1", "ratio2",
+        "trend_idx", "Mes_sin", "Mes_cos", "Ventas"
+    ]
+    for c in numeric_cols:
+        if c in train.columns:
+            train[c] = pd.to_numeric(train[c], errors="coerce")
+
+    train = train.replace([np.inf, -np.inf], np.nan)
+
     return monthly, train
 
 
-def train_global_regression(train):
-    feature_cols = ["lag1", "lag2", "lag3", "ma3", "Mes_sin", "Mes_cos"]
+def get_feature_cols():
+    return [
+        "lag1", "lag2", "lag3", "lag6", "lag12",
+        "ma3", "std3", "max3", "min3",
+        "diff1", "diff2", "ratio1", "ratio2",
+        "trend_idx", "Mes_sin", "Mes_cos"
+    ]
 
-    if len(train) < 20:
+
+def train_global_regression(train):
+    feature_cols = get_feature_cols()
+
+    if train.empty or len(train) < MIN_FILAS_ENTRENAMIENTO:
         return None, feature_cols
+
+    train = train.copy()
+    for c in feature_cols:
+        if c not in train.columns:
+            train[c] = 0.0
 
     X = train[feature_cols].fillna(0).values
     y = train["Ventas"].fillna(0).values
 
-    model = NumpyLinearRegression().fit(X, y, feature_names=feature_cols)
+    model = NumpyRidgeRegression(alpha=RIDGE_ALPHA).fit(X, y, feature_names=feature_cols)
     return model, feature_cols
 
 
@@ -190,30 +260,60 @@ def predict_next_month_per_sku(monthly, model, feature_cols):
 
     for codigo, g in monthly.groupby("Código"):
         g = g.sort_values("Fecha").reset_index(drop=True)
+        ventas = g["Ventas"].tolist()
 
         meses_historial = int((g["Ventas"] > 0).sum())
 
-        last1 = g["Ventas"].iloc[-1] if len(g) >= 1 else 0
-        last2 = g["Ventas"].iloc[-2] if len(g) >= 2 else 0
-        last3 = g["Ventas"].iloc[-3] if len(g) >= 3 else 0
-        ma3 = np.mean([last1, last2, last3])
+        last1 = ventas[-1] if len(ventas) >= 1 else 0
+        last2 = ventas[-2] if len(ventas) >= 2 else 0
+        last3 = ventas[-3] if len(ventas) >= 3 else 0
+        last6 = ventas[-6] if len(ventas) >= 6 else 0
+        last12 = ventas[-12] if len(ventas) >= 12 else 0
+
+        vals3 = np.array([last1, last2, last3], dtype=float)
+
+        ma3 = float(np.mean(vals3))
+        std3 = float(np.std(vals3))
+        max3 = float(np.max(vals3))
+        min3 = float(np.min(vals3))
+
+        diff1 = float(last1 - last2)
+        diff2 = float(last2 - last3)
+        ratio1 = float(last1 / (last2 + 1))
+        ratio2 = float(last2 / (last3 + 1))
+        trend_idx = float(len(g) + 1)
 
         last_fecha = g["Fecha"].iloc[-1]
         pred_month = next_month(last_fecha.month)
 
-        mes_sin = np.sin(2 * np.pi * pred_month / 12)
-        mes_cos = np.cos(2 * np.pi * pred_month / 12)
+        mes_sin = float(np.sin(2 * np.pi * pred_month / 12))
+        mes_cos = float(np.cos(2 * np.pi * pred_month / 12))
 
         X_pred = pd.DataFrame([{
             "lag1": last1,
             "lag2": last2,
             "lag3": last3,
+            "lag6": last6,
+            "lag12": last12,
             "ma3": ma3,
+            "std3": std3,
+            "max3": max3,
+            "min3": min3,
+            "diff1": diff1,
+            "diff2": diff2,
+            "ratio1": ratio1,
+            "ratio2": ratio2,
+            "trend_idx": trend_idx,
             "Mes_sin": mes_sin,
             "Mes_cos": mes_cos
         }])
 
-        pred = model.predict(X_pred[feature_cols].fillna(0).values)[0]
+        for c in feature_cols:
+            if c not in X_pred.columns:
+                X_pred[c] = 0.0
+
+        X_pred = X_pred[feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0)
+        pred = model.predict(X_pred.values)[0]
         pred = max(0, pred)
 
         rows.append({
@@ -611,7 +711,7 @@ try:
     st.download_button(
         "Descargar CSV",
         tabla.to_csv(index=False).encode("utf-8-sig"),
-        "compra_v7_2.csv"
+        "compra_v8_0.csv"
     )
 
 except Exception as e:
