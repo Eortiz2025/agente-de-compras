@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-APP_VERSION = "2026-03-28-v7.2 REGRESION + ESTACIONALIDAD"
+APP_VERSION = "v7.2 REGRESION"
 
 MIN_ROTACION_V30D = 3
 COMPRA_MINIMA_UNIDAD = 1
