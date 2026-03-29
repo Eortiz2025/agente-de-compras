@@ -7,7 +7,7 @@ import calendar
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-APP_VERSION = "2026-03-28-v5.1 ESTABLE"
+APP_VERSION = "2026-03-28-v5.1 ESTABLE FIX"
 
 ALPHA_V30D = 0.3
 
@@ -28,9 +28,10 @@ st.set_page_config(page_title="Agente de compras", layout="wide")
 def norm_code(s):
     return s.astype(str).str.strip().str.upper()
 
+# 🔴 FIX AQUÍ
 def round_up(qty, mult):
-    if pd.isna(qty) or qty <= 0:
-        return 0
+    if pd.isna(qty) or qty <= 0 or pd.isna(mult) or mult <= 0:
+        return int(qty) if qty > 0 else 0
     return int(np.ceil(qty / mult) * mult)
 
 def detect_pack(name):
@@ -41,7 +42,7 @@ def detect_pack(name):
     return np.nan
 
 # =========================
-# ERPLY PARSER (ESTABLE)
+# ERPLY PARSER
 # =========================
 def read_erply(file):
     tables = pd.read_html(file, header=None)
@@ -156,11 +157,11 @@ final["Compra_Base"] = (final["Demanda30"] - final["Stock"]).clip(lower=0)
 
 final["Multiplo"] = final["Nombre"].apply(detect_pack)
 
-final["Compra"] = np.where(
-    (final["Compra_Base"]>0)&(final["Multiplo"].fillna(0)>0),
-    [round_up(q,m) for q,m in zip(final["Compra_Base"],final["Multiplo"].fillna(0))],
-    final["Compra_Base"]
-)
+# 🔴 FIX AQUÍ (sin lógica nueva)
+final["Compra"] = [
+    round_up(q, m)
+    for q, m in zip(final["Compra_Base"], final["Multiplo"])
+]
 
 # =========================
 # IMPORTE
