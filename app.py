@@ -1,15 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import io
-import re
-import calendar
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
-APP_VERSION = "2026-03-28-v5.1 ESTABLE FIX"
+APP_VERSION = "2026-03-28-v5.2 CALIBRADO"
 
-ALPHA_V30D = 0.3
+ALPHA_V30D = 0.5  # 🔧 balanceado
 
 PACK_RULES = [
     ("HOJA EUROCOLOR", 100),
@@ -28,7 +23,6 @@ st.set_page_config(page_title="Agente de compras", layout="wide")
 def norm_code(s):
     return s.astype(str).str.strip().str.upper()
 
-# 🔴 FIX AQUÍ
 def round_up(qty, mult):
     if pd.isna(qty) or qty <= 0 or pd.isna(mult) or mult <= 0:
         return int(qty) if qty > 0 else 0
@@ -42,7 +36,7 @@ def detect_pack(name):
     return np.nan
 
 # =========================
-# ERPLY PARSER
+# ERPLY PARSER (ESTABLE)
 # =========================
 def read_erply(file):
     tables = pd.read_html(file, header=None)
@@ -76,7 +70,7 @@ def read_erply(file):
 # =========================
 # UI
 # =========================
-st.title("Agente de compras V5")
+st.title("Agente de compras V5.2")
 
 hist_file = st.file_uploader("Histórico", type=["xlsx"])
 erply_file = st.file_uploader("Erply", type=["xls"])
@@ -98,10 +92,10 @@ cost = hist[hist["Año"]==2025].groupby("Código").agg({
     "Ventas":"sum","Importe":"sum"
 }).reset_index()
 
-cost["Costo"] = cost["Importe"]/cost["Ventas"]
+cost["Costo"] = cost["Importe"] / cost["Ventas"]
 
 # =========================
-# DEMANDA ESCOLAR
+# DEMANDA ESCOLAR (abr–oct)
 # =========================
 hist_escolar = hist[hist["Mes"].between(4,10)]
 
@@ -113,6 +107,9 @@ df = pd.DataFrame({
     "Dem_2024": dem_2024
 }).fillna(0).reset_index()
 
+# =========================
+# DELTA
+# =========================
 df["Ratio"] = np.where(df["Dem_2024"]>0,
                        df["Dem_2025"]/df["Dem_2024"],1)
 
@@ -123,6 +120,9 @@ def clas(r):
 
 df["Tipo"] = df["Ratio"].apply(clas)
 
+# =========================
+# DEMANDA BASE
+# =========================
 def demanda(row):
     if row["Tipo"]=="SOBRECOMPRA":
         return 0.9*row["Dem_2025"] + 0.1*row["Dem_2024"]
@@ -135,10 +135,33 @@ df["Demanda_Base"] = df.apply(demanda, axis=1)
 df["Demanda_Mensual"] = df["Demanda_Base"]/7
 
 # =========================
+# TENDENCIA 2026 (ene–feb)
+# =========================
+ytd_2026 = hist[(hist["Año"]==2026) & (hist["Mes"].isin([1,2]))].groupby("Código")["Ventas"].sum()
+ytd_2025 = hist[(hist["Año"]==2025) & (hist["Mes"].isin([1,2]))].groupby("Código")["Ventas"].sum()
+
+trend = pd.DataFrame({
+    "YTD_2026": ytd_2026,
+    "YTD_2025": ytd_2025
+}).fillna(0).reset_index()
+
+trend["Factor"] = np.where(
+    trend["YTD_2025"]>0,
+    trend["YTD_2026"]/trend["YTD_2025"],
+    1
+)
+
+# 🔧 limitar impacto
+trend["Factor"] = trend["Factor"].clip(0.8, 1.2)
+
+# =========================
 # MERGE
 # =========================
 final = vs.merge(df, on="Código", how="left")
 final = final.merge(cost[["Código","Costo"]], on="Código", how="left")
+final = final.merge(trend[["Código","Factor"]], on="Código", how="left")
+
+final["Factor"] = final["Factor"].fillna(1)
 
 final["Demanda_Mensual"] = final["Demanda_Mensual"].fillna(final["V30D"])
 
@@ -150,14 +173,23 @@ final["Demanda30"] = np.ceil(
     ALPHA_V30D*final["V30D"]
 )
 
+# aplicar tendencia
+final["Demanda30"] = np.ceil(final["Demanda30"] * final["Factor"])
+
 # =========================
 # COMPRA
 # =========================
 final["Compra_Base"] = (final["Demanda30"] - final["Stock"]).clip(lower=0)
 
+# 🔧 piso mínimo para evitar quiebre
+final["Compra_Base"] = np.where(
+    (final["Compra_Base"] == 0) & (final["V30D"] > 0),
+    1,
+    final["Compra_Base"]
+)
+
 final["Multiplo"] = final["Nombre"].apply(detect_pack)
 
-# 🔴 FIX AQUÍ (sin lógica nueva)
 final["Compra"] = [
     round_up(q, m)
     for q, m in zip(final["Compra_Base"], final["Multiplo"])
@@ -166,7 +198,7 @@ final["Compra"] = [
 # =========================
 # IMPORTE
 # =========================
-final["Importe"] = final["Compra"]*final["Costo"]
+final["Importe"] = final["Compra"] * final["Costo"]
 
 # =========================
 # COBERTURA
@@ -182,7 +214,7 @@ def nivel(c):
 final["Nivel"] = final["Cobertura"].apply(nivel)
 
 # =========================
-# TABLA
+# TABLA FINAL
 # =========================
 tabla = final[[
     "Código","Nombre","Stock",
@@ -208,5 +240,5 @@ st.dataframe(tabla, use_container_width=True, height=600)
 st.download_button(
     "Descargar CSV",
     tabla.to_csv(index=False).encode("utf-8-sig"),
-    "compra_v5.csv"
+    "compra_v5_2.csv"
 )
