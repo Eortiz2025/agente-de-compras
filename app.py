@@ -10,12 +10,10 @@ from zoneinfo import ZoneInfo
 # =========================
 # CONFIG + VERSION
 # =========================
-APP_VERSION = "2026-03-16-v4.6 + múltiplos empaque"
+APP_VERSION = "2026-03-28-v5.0 DEMANDA ESCOLAR + DELTA"
 
-# Parámetros clave
-ALPHA_V30D = 0.25  # 25% influencia de V30D (últimos 30 días) cuando hay histórico
+ALPHA_V30D = 0.25
 
-# Reglas de empaque (prefijo del nombre -> múltiplo)
 PACK_RULES = [
     ("POLITEC 100M", 6),
     ("POLITEC 250M", 6),
@@ -28,411 +26,185 @@ PACK_RULES = [
     ("CARTULINA FLUORESCENTE", 10),
     ("CARTULINA BRISTOL", 25),
     ("PAPEL CHINA", 100),
-    ("PAPEL CREPE", 10),    
+    ("PAPEL CREPE", 10),
     ("PAPEL LUSTRE", 25),
     ("PLUMA BIC", 12),
 ]
 
 st.set_page_config(page_title="Agente de compras", layout="wide")
 
-# =========================================================
-# TOP BAR: TÍTULO + BOTÓN
-# =========================================================
-tcol1, tcol2 = st.columns([0.78, 0.22], vertical_alignment="center")
-with tcol1:
-    st.title("Agente de compras")
-    st.caption(f"Versión app: {APP_VERSION}")
-with tcol2:
-    if st.button("Limpiar caché y reiniciar", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
-
-# =========================================================
+# =========================
 # HELPERS
-# =========================================================
-CODE_RE = re.compile(r"^[A-Za-z0-9\-]+$")
-
-def norm_code(s: pd.Series) -> pd.Series:
+# =========================
+def norm_code(s):
     return s.astype(str).str.strip().str.upper()
 
-def norm_name_series(s: pd.Series) -> pd.Series:
+def norm_name(s):
     return s.astype(str).fillna("").str.strip().str.upper()
 
-def round_up_to_multiple(qty: float, multiple: int) -> int:
-    qty = pd.to_numeric(qty, errors="coerce")
-    if pd.isna(qty) or qty <= 0 or multiple <= 0:
+def round_up(qty, mult):
+    if pd.isna(qty) or qty <= 0 or mult <= 0:
         return 0
-    return int(np.ceil(qty / multiple) * multiple)
+    return int(np.ceil(qty / mult) * mult)
 
-def detect_pack_rule(name: str):
-    n = str(name).strip().upper()
-    for prefix, multiple in PACK_RULES:
-        if n.startswith(prefix):
-            return prefix, int(multiple)
-    return "", np.nan
+def detect_pack(name):
+    n = str(name).upper()
+    for p, m in PACK_RULES:
+        if n.startswith(p):
+            return m
+    return np.nan
 
-# =========================================================
-# ERPLY HTML
-# =========================================================
-def _looks_like_table(df: pd.DataFrame) -> bool:
-    if df is None or df.empty or df.shape[1] < 12:
-        return False
+# =========================
+# UI
+# =========================
+st.title("Agente de compras V5")
+st.caption(APP_VERSION)
 
-    def is_code(x):
-        s = str(x).strip()
-        return bool(CODE_RE.match(s)) and len(s) >= 3 and "codigo" not in s.lower()
-
-    for i in range(min(100, len(df))):
-        if is_code(df.iloc[i, 1]) and isinstance(df.iloc[i, 3], str):
-            return True
-    return False
-
-def _detect_data_start(df: pd.DataFrame) -> int:
-    def is_code(x):
-        s = str(x).strip()
-        return bool(CODE_RE.match(s)) and len(s) >= 3 and "codigo" not in s.lower()
-
-    for i in range(min(180, len(df))):
-        if is_code(df.iloc[i, 1]) and isinstance(df.iloc[i, 3], str):
-            return i
-    return 0
-
-@st.cache_data(show_spinner=False)
-def read_erply_html_bytes(data: bytes) -> pd.DataFrame:
-    try:
-        tables = pd.read_html(io.BytesIO(data), header=None, flavor="lxml")
-    except Exception:
-        tables = pd.read_html(io.BytesIO(data), header=None)
-
-    candidates = [t for t in tables if t.shape[1] >= 12]
-    chosen = max(candidates, key=lambda t: t.shape[0]) if candidates else tables[0]
-
-    if not _looks_like_table(chosen):
-        for t in candidates:
-            if _looks_like_table(t):
-                chosen = t
-                break
-
-    start = _detect_data_start(chosen)
-    raw = chosen.iloc[start:, :12].reset_index(drop=True)
-
-    out = pd.DataFrame({
-        "Código": raw.iloc[:, 1].astype(str).str.strip(),
-        "EAN": raw.iloc[:, 2].astype(str).fillna("").str.strip(),
-        "Nombre": raw.iloc[:, 3].astype(str).fillna("").str.strip(),
-        "V30D": pd.to_numeric(raw.iloc[:, 4], errors="coerce").fillna(0),
-        "Stock": pd.to_numeric(raw.iloc[:, 6], errors="coerce").fillna(0),
-        "V30D_Pesos": pd.to_numeric(raw.iloc[:, 11], errors="coerce").fillna(0),
-    })
-
-    cod = out["Código"].astype(str).str.strip().str.lower()
-    out = out[(out["Código"].astype(str).str.strip() != "") & (cod != "nan")]
-    out = out[~cod.str.contains(r"^total", regex=True, na=False)]
-
-    out["EAN"] = out["EAN"].replace({"nan": "", "None": "", "NONE": ""})
-
-    # Normaliza Código para merges
-    out["Código"] = norm_code(out["Código"])
-
-    return out.reset_index(drop=True)
-
-@st.cache_data(show_spinner=False)
-def read_hist_xlsx_bytes(data: bytes) -> pd.DataFrame:
-    return pd.read_excel(io.BytesIO(data), engine="openpyxl")
-
-# =========================================================
-# UPLOADERS
-# =========================================================
-colL, colR = st.columns(2)
-with colL:
-    hist_file = st.file_uploader(
-        "1) Histórico (.xlsx) — columnas: Código, Nombre, Año, Mes, Ventas, Importe",
-        type=["xlsx"]
-    )
-with colR:
-    erply_file = st.file_uploader(
-        "2) Erply V30D + Stock (.xls)",
-        type=["xls"]
-    )
+hist_file = st.file_uploader("Histórico", type=["xlsx"])
+erply_file = st.file_uploader("Erply", type=["xls"])
 
 if hist_file is None or erply_file is None:
-    st.info("Sube ambos archivos para continuar.")
     st.stop()
 
-hist = read_hist_xlsx_bytes(hist_file.getvalue())
-vs = read_erply_html_bytes(erply_file.getvalue())
+# =========================
+# LOAD
+# =========================
+hist = pd.read_excel(hist_file)
+vs = pd.read_html(erply_file)[0]
 
-# =========================================================
-# HISTÓRICO
-# =========================================================
-req = {"Código", "Nombre", "Año", "Mes", "Ventas", "Importe"}
-missing = req - set(hist.columns)
-if missing:
-    st.error(f"Histórico: faltan columnas {sorted(missing)}")
-    st.stop()
+vs = vs.rename(columns={
+    vs.columns[1]: "Código",
+    vs.columns[3]: "Nombre",
+    vs.columns[4]: "V30D",
+    vs.columns[6]: "Stock"
+})
 
-hist = hist.copy()
-
-# Normaliza Código para merges
 hist["Código"] = norm_code(hist["Código"])
+vs["Código"] = norm_code(vs["Código"])
 
-hist["Nombre"] = hist["Nombre"].astype(str).fillna("").str.strip()
-hist["Año"] = pd.to_numeric(hist["Año"], errors="coerce")
-hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce")
 hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
 hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0)
 
-# SOLO 2024-2025
-hist = hist[hist["Año"].isin([2024, 2025])].copy()
+# =========================
+# COSTO UNITARIO (2025)
+# =========================
+cost = hist[hist["Año"]==2025].groupby("Código").agg({
+    "Ventas":"sum","Importe":"sum"
+}).reset_index()
 
-hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce").fillna(0).astype("int16")
-hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0).astype("float32")
-hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0).astype("float32")
+cost["Costo_Unitario"] = cost["Importe"] / cost["Ventas"]
 
-# =========================================================
-# COSTO UNITARIO (2024-2025) = SUM(Importe) / SUM(Ventas) por Código
-# =========================================================
-costo_unit_df = (
-    hist.groupby("Código", as_index=False)
-        .agg(Ventas_total=("Ventas", "sum"), Importe_total=("Importe", "sum"))
-)
-costo_unit_df["Costo_Unitario"] = np.where(
-    costo_unit_df["Ventas_total"] > 0,
-    costo_unit_df["Importe_total"] / costo_unit_df["Ventas_total"],
-    np.nan
-)
-costo_unit_df["Costo_Unitario"] = pd.to_numeric(costo_unit_df["Costo_Unitario"], errors="coerce")
+# =========================
+# DEMANDA ESCOLAR V5
+# =========================
+hist_escolar = hist[hist["Mes"].between(4,10)]
 
-# =========================================================
-# HISTÓRICO TOTAL 2024+2025 POR CÓDIGO
-# Si la suma de Ventas en 2024 y 2025 es 0 => usar V30D al 100%
-# =========================================================
-hist_total_24_25 = (
-    hist.groupby("Código", as_index=False)["Ventas"]
-        .sum()
-        .rename(columns={"Ventas": "Hist_24_25_Ventas"})
-)
+dem_2025 = hist_escolar[hist_escolar["Año"]==2025].groupby("Código")["Ventas"].sum()
+dem_2024 = hist_escolar[hist_escolar["Año"]==2024].groupby("Código")["Ventas"].sum()
 
-# =========================================================
-# P90 POR MES (por Código)
-# =========================================================
-nombre_hist = (
-    hist.loc[hist["Nombre"] != "", ["Código", "Nombre"]]
-    .drop_duplicates("Código")
-    .rename(columns={"Nombre": "Nombre_hist"})
-)
+df = pd.DataFrame({
+    "Dem_2025": dem_2025,
+    "Dem_2024": dem_2024
+}).fillna(0).reset_index()
 
-def p90_int(x):
-    x = pd.to_numeric(x, errors="coerce").dropna()
-    if len(x) == 0:
-        return 0
-    try:
-        return int(np.quantile(x, 0.90, method="higher"))
-    except TypeError:
-        return int(np.percentile(x, 90, interpolation="higher"))
+df["Ratio"] = np.where(df["Dem_2024"]>0,
+                       df["Dem_2025"]/df["Dem_2024"],1)
 
-g = (
-    hist.groupby(["Código", "Mes"])["Ventas"]
-        .apply(p90_int)
-        .reset_index(name="P90")
-)
+def clas(r):
+    if r < 0.7: return "SOBRECOMPRA"
+    elif r <= 1.1: return "ALINEADO"
+    else: return "SUBESTIMADO"
 
-p = g.pivot_table(index="Código", columns="Mes", values="P90", fill_value=0).reset_index()
+df["Tipo"] = df["Ratio"].apply(clas)
 
-for m in range(1, 13):
-    if m not in p.columns:
-        p[m] = 0
+def demanda(row):
+    if row["Tipo"]=="SOBRECOMPRA":
+        return 0.9*row["Dem_2025"] + 0.1*row["Dem_2024"]
+    elif row["Tipo"]=="ALINEADO":
+        return 0.75*row["Dem_2025"] + 0.25*row["Dem_2024"]
+    elif row["Tipo"]=="SUBESTIMADO":
+        return 0.6*row["Dem_2025"] + 0.4*row["Dem_2024"]
+    else:
+        return row["Dem_2025"]
 
-p = p.rename(columns={m: f"Max_M{m:02d}" for m in range(1, 13)})
+df["Demanda_Base"] = df.apply(demanda, axis=1)
+df["Demanda_Mensual"] = df["Demanda_Base"] / 7
 
-max_mes_df = p.merge(nombre_hist, on="Código", how="left")
-
-# =========================================================
+# =========================
 # MERGE
-# =========================================================
-final = vs.merge(max_mes_df, on="Código", how="left")
+# =========================
+final = vs.merge(df, on="Código", how="left")
+final = final.merge(cost[["Código","Costo_Unitario"]], on="Código", how="left")
 
-final = final.merge(hist_total_24_25, on="Código", how="left")
-final["Hist_24_25_Ventas"] = pd.to_numeric(final["Hist_24_25_Ventas"], errors="coerce").fillna(0)
+final["Demanda_Mensual"] = final["Demanda_Mensual"].fillna(final["V30D"])
 
-final = final.merge(costo_unit_df[["Código", "Costo_Unitario"]], on="Código", how="left")
-final["Costo_Unitario"] = pd.to_numeric(final["Costo_Unitario"], errors="coerce")
-
-final["Nombre"] = final["Nombre"].fillna("").astype(str).str.strip()
-final["Nombre_hist"] = final.get("Nombre_hist", "").fillna("").astype(str).str.strip()
-final["Nombre"] = np.where(
-    final["Nombre"] != "",
-    final["Nombre"],
-    np.where(final["Nombre_hist"] != "", final["Nombre_hist"], "(sin nombre)")
+# =========================
+# DEMANDA FINAL
+# =========================
+final["Demanda30"] = np.ceil(
+    0.7 * final["Demanda_Mensual"] +
+    0.3 * final["V30D"]
 )
 
-# =========================================================
-# FECHA + DEMANDA
-# =========================================================
-tz = ZoneInfo("America/Mazatlan")
-hoy = datetime.now(tz).date()
+# =========================
+# COMPRA
+# =========================
+final["Compra_Base"] = (final["Demanda30"] - final["Stock"]).clip(lower=0)
 
-dias_mes = calendar.monthrange(hoy.year, hoy.month)[1]
-peso_actual = (dias_mes - hoy.day + 1) / dias_mes
-peso_siguiente = 1 - peso_actual
-
-mes_actual = hoy.month
-mes_siguiente = 1 if mes_actual == 12 else mes_actual + 1
-
-col_act = f"Max_M{mes_actual:02d}"
-col_sig = f"Max_M{mes_siguiente:02d}"
-
-if col_act not in final.columns:
-    final[col_act] = 0
-if col_sig not in final.columns:
-    final[col_sig] = 0
-
-# =========================================================
-# FORZAR NUMÉRICOS + NaN->0
-# =========================================================
-final["Stock"] = pd.to_numeric(final["Stock"], errors="coerce").fillna(0)
-final["V30D"] = pd.to_numeric(final["V30D"], errors="coerce").fillna(0)
-final[col_act] = pd.to_numeric(final[col_act], errors="coerce").fillna(0)
-final[col_sig] = pd.to_numeric(final[col_sig], errors="coerce").fillna(0)
-
-# =========================================================
-# DEMANDA30
-# Regla:
-# - Si Hist_24_25_Ventas == 0 => Demanda30 = V30D
-# - Si base_hist == 0         => Demanda30 = V30D
-# - Si no                     => mezcla con AmazonSpikeBrake
-# =========================================================
-base_hist = (peso_actual * final[col_act]) + (peso_siguiente * final[col_sig])
-base_hist = pd.to_numeric(base_hist, errors="coerce").replace([np.inf, -np.inf], 0).fillna(0)
-
-# AmazonSpikeBrake
-R = np.where(base_hist > 0, final["V30D"] / base_hist, 1.0)
-R = pd.to_numeric(R, errors="coerce")
-R = np.where(np.isfinite(R), R, 1.0)
-
-R_eff = np.maximum(R, 1.0)
-sqrt_R = np.sqrt(R_eff)
-
-alpha_dyn = ALPHA_V30D / sqrt_R
-alpha_dyn = np.clip(alpha_dyn, 0.0, ALPHA_V30D)
-
-V30D_adj = base_hist * sqrt_R
-
-demanda_mix = ((1 - alpha_dyn) * base_hist) + (alpha_dyn * V30D_adj)
-
-final["Demanda30"] = np.where(
-    final["Hist_24_25_Ventas"] <= 0,
-    final["V30D"],
-    np.where(
-        base_hist <= 0,
-        final["V30D"],
-        demanda_mix
-    )
-)
-
-final["Demanda30"] = (
-    pd.to_numeric(final["Demanda30"], errors="coerce")
-      .replace([np.inf, -np.inf], 0)
-      .fillna(0)
-)
-
-# =========================================================
-# Demanda30: ceil a entero
-# =========================================================
-final["Demanda30"] = np.ceil(final["Demanda30"]).astype(int)
-
-# =========================================================
-# COMPRA BASE
-# =========================================================
-final["Compra_Base"] = (final["Demanda30"] - final["Stock"]).clip(lower=0).astype(int)
-
-# =========================================================
-# REGLAS DE EMPAQUE
-# =========================================================
-name_norm = norm_name_series(final["Nombre"])
-
-pack_info = name_norm.apply(detect_pack_rule)
-final["Regla_Empaque"] = pack_info.apply(lambda x: x[0] if isinstance(x, tuple) else "")
-final["Multiplo_Empaque"] = pack_info.apply(lambda x: x[1] if isinstance(x, tuple) else np.nan)
-final["Multiplo_Empaque"] = pd.to_numeric(final["Multiplo_Empaque"], errors="coerce")
+name_norm = norm_name(final["Nombre"])
+final["Multiplo"] = name_norm.apply(detect_pack)
 
 final["Compra"] = np.where(
-    (final["Compra_Base"] > 0) & (final["Multiplo_Empaque"].fillna(0) > 0),
-    [
-        round_up_to_multiple(qty, int(mult))
-        for qty, mult in zip(final["Compra_Base"], final["Multiplo_Empaque"].fillna(0))
-    ],
+    (final["Compra_Base"] > 0) & (final["Multiplo"].fillna(0) > 0),
+    [round_up(q, m) for q, m in zip(final["Compra_Base"], final["Multiplo"].fillna(0))],
     final["Compra_Base"]
-).astype(int)
-
-final["Empaque_Aplicado"] = np.where(
-    (final["Compra"] != final["Compra_Base"]) & (final["Multiplo_Empaque"].fillna(0) > 0),
-    "Sí",
-    "No"
 )
 
-# =========================================================
-# IMPORTE A COMPRAR = Compra final * Costo_Unitario
-# =========================================================
-final["Importe_Compra"] = final["Compra"] * final["Costo_Unitario"]
-importe_a_comprar_total = float(pd.to_numeric(final["Importe_Compra"], errors="coerce").fillna(0).sum())
+# =========================
+# IMPORTE
+# =========================
+final["Importe"] = final["Compra"] * final["Costo_Unitario"]
 
-# =========================================================
-# TABLA
-# =========================================================
-tabla = final[
-    [
-        "Código", "EAN", "Nombre", "Compra_Base", "Multiplo_Empaque",
-        "Empaque_Aplicado", "Compra", "Stock", "V30D", col_act, col_sig,
-        "Demanda30", "Costo_Unitario", "Importe_Compra"
-    ]
-].rename(columns={
-    col_act: f"P90Mes_{mes_actual:02d}",
-    col_sig: f"P90Mes_{mes_siguiente:02d}",
-})
+# =========================
+# COBERTURA
+# =========================
+final["Cobertura"] = np.where(final["Demanda30"]>0,
+                             final["Stock"]/final["Demanda30"],1)
 
-tabla[f"P90Mes_{mes_actual:02d}"] = pd.to_numeric(
-    tabla[f"P90Mes_{mes_actual:02d}"], errors="coerce"
-).fillna(0).astype(int)
+def nivel(c):
+    if c < 0.3: return "CRITICO"
+    elif c < 0.8: return "MEDIO"
+    else: return "SANO"
 
-tabla[f"P90Mes_{mes_siguiente:02d}"] = pd.to_numeric(
-    tabla[f"P90Mes_{mes_siguiente:02d}"], errors="coerce"
-).fillna(0).astype(int)
+final["Nivel"] = final["Cobertura"].apply(nivel)
 
-tabla["Demanda30"] = pd.to_numeric(tabla["Demanda30"], errors="coerce").fillna(0).astype(int)
-tabla["Compra_Base"] = pd.to_numeric(tabla["Compra_Base"], errors="coerce").fillna(0).astype(int)
-tabla["Compra"] = pd.to_numeric(tabla["Compra"], errors="coerce").fillna(0).astype(int)
-tabla["Multiplo_Empaque"] = pd.to_numeric(tabla["Multiplo_Empaque"], errors="coerce")
-tabla["Costo_Unitario"] = pd.to_numeric(tabla["Costo_Unitario"], errors="coerce")
-tabla["Importe_Compra"] = pd.to_numeric(tabla["Importe_Compra"], errors="coerce")
+# =========================
+# TABLA FINAL
+# =========================
+tabla = final[[
+    "Código","Nombre","Stock",
+    "Demanda30","Compra",
+    "Costo_Unitario","Importe",
+    "Nivel","Tipo"
+]]
 
-# =========================================================
-# MÉTRICAS
-# =========================================================
-skus_total = tabla["Código"].nunique()
-skus_compra = tabla.loc[tabla["Compra"] > 0, "Código"].nunique()
-skus_empaque = tabla.loc[tabla["Empaque_Aplicado"] == "Sí", "Código"].nunique()
+tabla = tabla.sort_values("Importe", ascending=False)
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("SKUs Erply", f"{skus_total:,}")
-m2.metric("SKUs Compra", f"{skus_compra:,}")
-m3.metric("SKUs con empaque aplicado", f"{skus_empaque:,}")
-m4.metric("Importe a comprar (estimado)", f"${importe_a_comprar_total:,.0f}")
+# =========================
+# METRICAS
+# =========================
+m1, m2, m3 = st.columns(3)
+m1.metric("SKUs", len(tabla))
+m2.metric("SKUs Compra", (tabla["Compra"]>0).sum())
+m3.metric("Importe Total", f"${tabla['Importe'].sum():,.0f}")
 
-# =========================================================
-# UI TABLA
-# =========================================================
-st.subheader("Compra Sugerida")
-st.dataframe(
-    tabla.sort_values(["Compra", "Demanda30"], ascending=False),
-    use_container_width=True,
-    height=600,
-    hide_index=True
-)
+# =========================
+# UI
+# =========================
+st.dataframe(tabla, use_container_width=True, height=600)
 
 st.download_button(
     "Descargar CSV",
     data=tabla.to_csv(index=False).encode("utf-8-sig"),
-    file_name="Compra sugerida.csv",
-    mime="text/csv"
+    file_name="Compra_v5.csv"
 )
