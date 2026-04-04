@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-APP_VERSION = "v8.0 RIDGE + FEATURES"
+APP_VERSION = "v8.0 RIDGE"
 
 MIN_ROTACION_V30D = 3
 COMPRA_MINIMA_UNIDAD = 1
