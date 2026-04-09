@@ -89,7 +89,7 @@ class NumpyRidgeRegression:
         n_features = X_design.shape[1]
 
         I = np.eye(n_features)
-        I[0, 0] = 0.0  # no penalizar intercepto
+        I[0, 0] = 0.0
 
         XtX = X_design.T @ X_design
         Xty = X_design.T @ y
@@ -135,6 +135,7 @@ def read_erply(file):
 
     out = pd.DataFrame({
         "Código": df.iloc[:, 1].astype(str).str.strip(),
+        "EAN": df.iloc[:, 2].astype(str).str.strip(),  # ← NUEVO
         "Nombre": df.iloc[:, 3].astype(str).fillna(""),
         "V30D": pd.to_numeric(df.iloc[:, 4], errors="coerce").fillna(0),
         "Stock": pd.to_numeric(df.iloc[:, 6], errors="coerce").fillna(0),
@@ -209,7 +210,6 @@ def build_monthly_features(hist):
 
     train = monthly.dropna(subset=["lag1", "lag2", "lag3"]).copy()
 
-    # Limpieza numérica
     numeric_cols = [
         "lag1", "lag2", "lag3", "lag6", "lag12",
         "ma3", "std3", "max3", "min3",
@@ -290,22 +290,13 @@ def predict_next_month_per_sku(monthly, model, feature_cols):
         mes_cos = float(np.cos(2 * np.pi * pred_month / 12))
 
         X_pred = pd.DataFrame([{
-            "lag1": last1,
-            "lag2": last2,
-            "lag3": last3,
-            "lag6": last6,
-            "lag12": last12,
-            "ma3": ma3,
-            "std3": std3,
-            "max3": max3,
-            "min3": min3,
-            "diff1": diff1,
-            "diff2": diff2,
-            "ratio1": ratio1,
-            "ratio2": ratio2,
+            "lag1": last1, "lag2": last2, "lag3": last3,
+            "lag6": last6, "lag12": last12,
+            "ma3": ma3, "std3": std3, "max3": max3, "min3": min3,
+            "diff1": diff1, "diff2": diff2,
+            "ratio1": ratio1, "ratio2": ratio2,
             "trend_idx": trend_idx,
-            "Mes_sin": mes_sin,
-            "Mes_cos": mes_cos
+            "Mes_sin": mes_sin, "Mes_cos": mes_cos
         }])
 
         for c in feature_cols:
@@ -661,6 +652,7 @@ def build_final_table(vs, hist):
 
     tabla = final[[
         "Código",
+        "EAN",        # ← NUEVO
         "Nombre",
         "Compra",
         "Stock",
