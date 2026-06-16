@@ -730,9 +730,18 @@ try:
     st.markdown("### Tabla de compra")
     st.dataframe(tabla, use_container_width=True, height=650)
 
+    tabla_descarga = tabla.copy()
+    tabla_descarga["EAN"] = (
+        tabla_descarga["EAN"]
+        .fillna("")
+        .astype(str)
+        .str.replace(r"\.0$", "", regex=True)
+        .apply(lambda x: f'="{x}"' if x else "")
+    )
+
     st.download_button(
         "Descargar CSV",
-        tabla.to_csv(index=False).encode("utf-8-sig"),
+        tabla_descarga.to_csv(index=False).encode("utf-8-sig"),
         "compra_v9_1_filtro_25.csv"
     )
 
