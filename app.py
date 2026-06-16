@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-APP_VERSION = "v9.0 RIDGE"
+APP_VERSION = "v9.1 RIDGE FILTRO 25%"
 
 MIN_ROTACION_V30D = 3
 COMPRA_MINIMA_UNIDAD = 1
+UMBRAL_COMPRA_DEMANDA = 0.25
 
 # Mezcla base
 PESO_REGRESION = 0.70
@@ -643,6 +644,22 @@ def build_final_table(vs, hist):
     )
 
     final["Compra"] = final["Compra_Base"].apply(round_normal)
+
+    final["Relacion_Compra_Demanda"] = np.where(
+        final["Demanda30"] > 0,
+        final["Compra"] / final["Demanda30"],
+        0
+    )
+
+    final["Porcentaje_Compra_Demanda"] = (
+        final["Relacion_Compra_Demanda"] * 100
+    ).round(1)
+
+    final = final[
+        (final["Compra"] > 0) &
+        (final["Relacion_Compra_Demanda"] >= UMBRAL_COMPRA_DEMANDA)
+    ].copy()
+
     final["Costo"] = final["Costo"].round(2)
     final["Importe"] = (final["Compra"] * final["Costo"]).round(2)
 
@@ -669,6 +686,7 @@ def build_final_table(vs, hist):
         "Compra",
         "Stock",
         "Demanda30",
+        "Porcentaje_Compra_Demanda",
         "V30D",
         "V04_2025",
         "V05_2025",
@@ -715,7 +733,7 @@ try:
     st.download_button(
         "Descargar CSV",
         tabla.to_csv(index=False).encode("utf-8-sig"),
-        "compra_v9_0.csv"
+        "compra_v9_1_filtro_25.csv"
     )
 
 except Exception as e:
