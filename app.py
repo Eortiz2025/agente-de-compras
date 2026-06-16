@@ -1,60 +1,78 @@
-import streamlit as st import pandas as pd import numpy as np
+import streamlit as st
+import pandas as pd
+import numpy as np
 
-APP_VERSION = “v9.0 RIDGE”
+APP_VERSION = "v9.0 RIDGE"
 
-MIN_ROTACION_V30D = 3 COMPRA_MINIMA_UNIDAD = 1
+MIN_ROTACION_V30D = 3
+COMPRA_MINIMA_UNIDAD = 1
 
-Mezcla base
+# Mezcla base
+PESO_REGRESION = 0.70
+PESO_V30D = 0.30
 
-PESO_REGRESION = 0.70 PESO_V30D = 0.30
-
-Seguridad de regresión
-
-MIN_MESES_PARA_REGRESION = 3 MAX_FACTOR_SOBRE_HISTORICO = 2.5
+# Seguridad de regresión
+MIN_MESES_PARA_REGRESION = 3
+MAX_FACTOR_SOBRE_HISTORICO = 2.5
 MAX_FACTOR_SOBRE_V30D = 3.0
 
-Ridge
+# Ridge
+RIDGE_ALPHA = 3.0
+MIN_FILAS_ENTRENAMIENTO = 30
 
-RIDGE_ALPHA = 3.0 MIN_FILAS_ENTRENAMIENTO = 30
+# Estacionalidad
+USAR_ESTACIONALIDAD = True
+ANOS_ESTACIONALIDAD = [2024, 2025]
+PESO_ANO_ESTACIONALIDAD = {
+    2024: 0.4,
+    2025: 0.6,
+}
+FACTOR_ESTACIONAL_MIN = 0.5
+FACTOR_ESTACIONAL_MAX = 2.5
 
-Estacionalidad
+# Ventana de compra
+MESES_ANTICIPACION = 1
+PESO_MES_ACTUAL = 0.70
+PESO_MES_SIGUIENTE = 0.30
 
-USAR_ESTACIONALIDAD = True ANOS_ESTACIONALIDAD = [2024, 2025]
-PESO_ANO_ESTACIONALIDAD = { 2024: 0.4, 2025: 0.6, }
-FACTOR_ESTACIONAL_MIN = 0.5 FACTOR_ESTACIONAL_MAX = 2.5
+st.set_page_config(page_title="Agente de compras", layout="wide")
 
-Ventana de compra
 
-MESES_ANTICIPACION = 1 PESO_MES_ACTUAL = 0.70 PESO_MES_SIGUIENTE = 0.30
+# =========================
+# HELPERS
+# =========================
+def norm_code(s):
+    return s.astype(str).str.strip().str.upper()
 
-st.set_page_config(page_title=“Agente de compras”, layout=“wide”)
 
-=========================
+def round_normal(qty):
+    if pd.isna(qty) or qty <= 0:
+        return 0
+    return int(np.ceil(qty))
 
-HELPERS
 
-=========================
+def current_month():
+    return pd.Timestamp.today().month
 
-def norm_code(s): return s.astype(str).str.strip().str.upper()
 
-def round_normal(qty): if pd.isna(qty) or qty <= 0: return 0 return
-int(np.ceil(qty))
+def next_month(m):
+    return 1 if m == 12 else m + 1
 
-def current_month(): return pd.Timestamp.today().month
 
-def next_month(m): return 1 if m == 12 else m + 1
+def safe_div(a, b):
+    return np.where(np.abs(b) > 1e-9, a / b, 0.0)
 
-def safe_div(a, b): return np.where(np.abs(b) > 1e-9, a / b, 0.0)
 
-=========================
-
-RIDGE REGRESSION CON NUMPY
-
-=========================
-
-class NumpyRidgeRegression: def init(self, alpha=1.0): self.alpha =
-alpha self.coef_ = None self.intercept_ = None self.feature_names_ =
-None self.is_fitted_ = False
+# =========================
+# RIDGE REGRESSION CON NUMPY
+# =========================
+class NumpyRidgeRegression:
+    def __init__(self, alpha=1.0):
+        self.alpha = alpha
+        self.coef_ = None
+        self.intercept_ = None
+        self.feature_names_ = None
+        self.is_fitted_ = False
 
     def fit(self, X, y, feature_names=None):
         X = np.asarray(X, dtype=float)
@@ -92,14 +110,13 @@ None self.is_fitted_ = False
             raise ValueError("X debe ser 2D.")
         return self.intercept_ + X @ self.coef_
 
-=========================
 
-ERPLY PARSER
-
-=========================
-
-def read_erply(file): tables = pd.read_html(file, header=None) df =
-max(tables, key=lambda x: x.shape[0])
+# =========================
+# ERPLY PARSER
+# =========================
+def read_erply(file):
+    tables = pd.read_html(file, header=None)
+    df = max(tables, key=lambda x: x.shape[0])
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0] for c in df.columns]
@@ -131,32 +148,35 @@ max(tables, key=lambda x: x.shape[0])
 
     return out.reset_index(drop=True)
 
-=========================
 
-HISTORICO PREP
-
-=========================
-
-def prepare_hist(hist): hist = hist.copy() hist[“Código”] =
-norm_code(hist[“Código”]) hist[“Ventas”] = pd.to_numeric(hist[“Ventas”],
-errors=“coerce”).fillna(0) hist[“Importe”] =
-pd.to_numeric(hist[“Importe”], errors=“coerce”).fillna(0) hist[“Año”] =
-pd.to_numeric(hist[“Año”], errors=“coerce”).fillna(0).astype(int)
-hist[“Mes”] = pd.to_numeric(hist[“Mes”],
-errors=“coerce”).fillna(0).astype(int)
+# =========================
+# HISTORICO PREP
+# =========================
+def prepare_hist(hist):
+    hist = hist.copy()
+    hist["Código"] = norm_code(hist["Código"])
+    hist["Ventas"] = pd.to_numeric(hist["Ventas"], errors="coerce").fillna(0)
+    hist["Importe"] = pd.to_numeric(hist["Importe"], errors="coerce").fillna(0)
+    hist["Año"] = pd.to_numeric(hist["Año"], errors="coerce").fillna(0).astype(int)
+    hist["Mes"] = pd.to_numeric(hist["Mes"], errors="coerce").fillna(0).astype(int)
 
     hist = hist[(hist["Mes"] >= 1) & (hist["Mes"] <= 12) & (hist["Año"] > 0)].copy()
     return hist
 
-=========================
 
-FEATURES MENSUALES MEJORADAS
-
-=========================
-
-def build_monthly_features(hist): monthly = ( hist.groupby([“Código”,
-“Año”, “Mes”], as_index=False) .agg({ “Ventas”: “sum”, “Importe”: “sum”
-}) .sort_values([“Código”, “Año”, “Mes”]) .reset_index(drop=True) )
+# =========================
+# FEATURES MENSUALES MEJORADAS
+# =========================
+def build_monthly_features(hist):
+    monthly = (
+        hist.groupby(["Código", "Año", "Mes"], as_index=False)
+        .agg({
+            "Ventas": "sum",
+            "Importe": "sum"
+        })
+        .sort_values(["Código", "Año", "Mes"])
+        .reset_index(drop=True)
+    )
 
     monthly["Fecha"] = pd.to_datetime(
         monthly["Año"].astype(str) + "-" + monthly["Mes"].astype(str).str.zfill(2) + "-01"
@@ -204,11 +224,18 @@ def build_monthly_features(hist): monthly = ( hist.groupby([“Código”,
 
     return monthly, train
 
-def get_feature_cols(): return [ “lag1”, “lag2”, “lag3”, “lag6”,
-“lag12”, “ma3”, “std3”, “max3”, “min3”, “diff1”, “diff2”, “ratio1”,
-“ratio2”, “trend_idx”, “Mes_sin”, “Mes_cos” ]
 
-def train_global_regression(train): feature_cols = get_feature_cols()
+def get_feature_cols():
+    return [
+        "lag1", "lag2", "lag3", "lag6", "lag12",
+        "ma3", "std3", "max3", "min3",
+        "diff1", "diff2", "ratio1", "ratio2",
+        "trend_idx", "Mes_sin", "Mes_cos"
+    ]
+
+
+def train_global_regression(train):
+    feature_cols = get_feature_cols()
 
     if train.empty or len(train) < MIN_FILAS_ENTRENAMIENTO:
         return None, feature_cols
@@ -224,9 +251,10 @@ def train_global_regression(train): feature_cols = get_feature_cols()
     model = NumpyRidgeRegression(alpha=RIDGE_ALPHA).fit(X, y, feature_names=feature_cols)
     return model, feature_cols
 
-def predict_next_month_per_sku(monthly, model, feature_cols): if model
-is None: return pd.DataFrame(columns=[“Código”,
-“Pred_Regresion_Mensual”, “Meses_Historial”])
+
+def predict_next_month_per_sku(monthly, model, feature_cols):
+    if model is None:
+        return pd.DataFrame(columns=["Código", "Pred_Regresion_Mensual", "Meses_Historial"])
 
     rows = []
 
@@ -287,17 +315,22 @@ is None: return pd.DataFrame(columns=[“Código”,
 
     return pd.DataFrame(rows)
 
-=========================
 
-COSTO
-
-=========================
-
-def build_cost(hist): cost_2025 = ( hist[hist[“Año”] == 2025]
-.groupby(“Código”) .agg({“Ventas”: “sum”, “Importe”: “sum”})
-.reset_index() ) cost_2025[“Costo_2025”] = np.where(
-cost_2025[“Ventas”] > 0, cost_2025[“Importe”] / cost_2025[“Ventas”],
-np.nan )
+# =========================
+# COSTO
+# =========================
+def build_cost(hist):
+    cost_2025 = (
+        hist[hist["Año"] == 2025]
+        .groupby("Código")
+        .agg({"Ventas": "sum", "Importe": "sum"})
+        .reset_index()
+    )
+    cost_2025["Costo_2025"] = np.where(
+        cost_2025["Ventas"] > 0,
+        cost_2025["Importe"] / cost_2025["Ventas"],
+        np.nan
+    )
 
     cost_all = (
         hist.groupby("Código")
@@ -319,14 +352,12 @@ np.nan )
     cost["Costo"] = cost["Costo_2025"].fillna(cost["Costo_All"])
     return cost[["Código", "Costo"]]
 
-=========================
 
-DEMANDA HISTORICA APOYO
-
-=========================
-
-def build_school_demand(hist): hist_escolar =
-hist[hist[“Mes”].between(4, 10)]
+# =========================
+# DEMANDA HISTORICA APOYO
+# =========================
+def build_school_demand(hist):
+    hist_escolar = hist[hist["Mes"].between(4, 10)]
 
     dem_2025 = (
         hist_escolar[hist_escolar["Año"] == 2025]
@@ -376,15 +407,17 @@ hist[hist[“Mes”].between(4, 10)]
 
     return df
 
-=========================
 
-COLUMNAS ABRIL / MAYO 2025
-
-=========================
-
-def build_v04_v05(hist): v04 = ( hist[(hist[“Año”] == 2025) &
-(hist[“Mes”] == 4)] .groupby(“Código”)[“Ventas”] .sum()
-.rename(“V04_2025”) )
+# =========================
+# COLUMNAS ABRIL / MAYO 2025
+# =========================
+def build_v04_v05(hist):
+    v04 = (
+        hist[(hist["Año"] == 2025) & (hist["Mes"] == 4)]
+        .groupby("Código")["Ventas"]
+        .sum()
+        .rename("V04_2025")
+    )
 
     v05 = (
         hist[(hist["Año"] == 2025) & (hist["Mes"] == 5)]
@@ -395,27 +428,24 @@ def build_v04_v05(hist): v04 = ( hist[(hist[“Año”] == 2025) &
 
     return v04, v05
 
-=========================
 
-FALLBACK GLOBAL DE COSTO
-
-=========================
-
-def fill_missing_costs_with_global_average(final, hist): total_ventas =
-hist[“Ventas”].sum() total_importe = hist[“Importe”].sum() global_cost =
-(total_importe / total_ventas) if total_ventas > 0 else 0
+# =========================
+# FALLBACK GLOBAL DE COSTO
+# =========================
+def fill_missing_costs_with_global_average(final, hist):
+    total_ventas = hist["Ventas"].sum()
+    total_importe = hist["Importe"].sum()
+    global_cost = (total_importe / total_ventas) if total_ventas > 0 else 0
 
     final["Costo"] = final["Costo"].fillna(global_cost).fillna(0)
     return final
 
-=========================
 
-ESTACIONALIDAD AUTOMATICA POR SKU
-
-=========================
-
-def build_seasonality(hist): hist_seas =
-hist[hist[“Año”].isin(ANOS_ESTACIONALIDAD)].copy()
+# =========================
+# ESTACIONALIDAD AUTOMATICA POR SKU
+# =========================
+def build_seasonality(hist):
+    hist_seas = hist[hist["Año"].isin(ANOS_ESTACIONALIDAD)].copy()
 
     if hist_seas.empty:
         return pd.DataFrame(columns=["Código", "Mes", "Factor_Estacional"])
@@ -457,9 +487,10 @@ hist[hist[“Año”].isin(ANOS_ESTACIONALIDAD)].copy()
 
     return seas[["Código", "Mes", "Factor_Estacional"]]
 
-def build_current_seasonality_for_purchase(seasonality_df): if
-seasonality_df.empty: return pd.DataFrame(columns=[“Código”,
-“Factor_Estacional_Compra”])
+
+def build_current_seasonality_for_purchase(seasonality_df):
+    if seasonality_df.empty:
+        return pd.DataFrame(columns=["Código", "Factor_Estacional_Compra"])
 
     mes_actual = current_month()
     mes_sig = next_month(mes_actual)
@@ -490,13 +521,12 @@ seasonality_df.empty: return pd.DataFrame(columns=[“Código”,
 
     return out[["Código", "Factor_Estacional_Compra"]]
 
-=========================
 
-SEGURIDAD DE REGRESION
-
-=========================
-
-def apply_regression_safety(final): final = final.copy()
+# =========================
+# SEGURIDAD DE REGRESION
+# =========================
+def apply_regression_safety(final):
+    final = final.copy()
 
     final["Meses_Historial"] = final["Meses_Historial"].fillna(0)
     final["Pred_Regresion_Usable"] = final["Pred_Regresion_Mensual"]
@@ -535,14 +565,14 @@ def apply_regression_safety(final): final = final.copy()
 
     return final
 
-=========================
 
-MODELO FINAL
-
-=========================
-
-def build_final_table(vs, hist): cost = build_cost(hist) school =
-build_school_demand(hist) v04, v05 = build_v04_v05(hist)
+# =========================
+# MODELO FINAL
+# =========================
+def build_final_table(vs, hist):
+    cost = build_cost(hist)
+    school = build_school_demand(hist)
+    v04, v05 = build_v04_v05(hist)
 
     monthly, train = build_monthly_features(hist)
     model, feature_cols = train_global_regression(train)
@@ -655,21 +685,22 @@ build_school_demand(hist) v04, v05 = build_v04_v05(hist)
 
     return tabla
 
-=========================
 
-UI
+# =========================
+# UI
+# =========================
+st.title(f"Agente de compras {APP_VERSION}")
 
-=========================
+hist_file = st.file_uploader("Histórico", type=["xlsx"])
+erply_file = st.file_uploader("Erply", type=["xls", "xlsx", "html"])
 
-st.title(f”Agente de compras {APP_VERSION}“)
+if hist_file is None or erply_file is None:
+    st.stop()
 
-hist_file = st.file_uploader(“Histórico”, type=[“xlsx”]) erply_file =
-st.file_uploader(“Erply”, type=[“xls”, “xlsx”, “html”])
-
-if hist_file is None or erply_file is None: st.stop()
-
-try: hist = pd.read_excel(hist_file) vs = read_erply(erply_file) hist =
-prepare_hist(hist)
+try:
+    hist = pd.read_excel(hist_file)
+    vs = read_erply(erply_file)
+    hist = prepare_hist(hist)
 
     tabla = build_final_table(vs, hist)
 
@@ -687,4 +718,5 @@ prepare_hist(hist)
         "compra_v9_0.csv"
     )
 
-except Exception as e: st.error(f”Error al procesar archivos: {e}“)
+except Exception as e:
+    st.error(f"Error al procesar archivos: {e}")
