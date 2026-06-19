@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-APP_VERSION = "v9.1 RIDGE "
+APP_VERSION = "v9.2 RIDGE + GMM SEGMENTACION"
 
 MIN_ROTACION_V30D = 3
 COMPRA_MINIMA_UNIDAD = 1
@@ -36,6 +36,81 @@ MESES_ANTICIPACION = 1
 PESO_MES_ACTUAL = 0.70
 PESO_MES_SIGUIENTE = 0.30
 
+# Segmentación GMM
+USAR_SEGMENTACION_GMM = True
+GMM_COMPONENTES = 6
+GMM_RANDOM_STATE = 42
+GMM_MIN_SKUS = 50
+GMM_CONFIANZA_MINIMA = 0.80
+
+# Parámetros dinámicos por perfil
+PARAMETROS_PERFIL = {
+    "ALTA_ROTACION_ESTABLE": {
+        "peso_regresion": 0.85,
+        "peso_v30d": 0.15,
+        "max_hist": 2.5,
+        "max_v30d": 3.0,
+        "umbral": 0.15,
+        "politica": "Cobertura alta y reposición frecuente. Confiar más en la regresión.",
+    },
+    "DEMANDA_EN_CRECIMIENTO": {
+        "peso_regresion": 0.65,
+        "peso_v30d": 0.35,
+        "max_hist": 3.5,
+        "max_v30d": 4.0,
+        "umbral": 0.20,
+        "politica": "Subir cobertura gradualmente. Permitir crecimiento sin disparar compras excesivas.",
+    },
+    "DEMANDA_EN_DESCENSO": {
+        "peso_regresion": 0.45,
+        "peso_v30d": 0.55,
+        "max_hist": 1.8,
+        "max_v30d": 2.0,
+        "umbral": 0.35,
+        "politica": "Comprar conservador. Evitar sobreinventario.",
+    },
+    "BAJA_ROTACION_ESPORADICA": {
+        "peso_regresion": 0.15,
+        "peso_v30d": 0.85,
+        "max_hist": 1.2,
+        "max_v30d": 1.5,
+        "umbral": 0.50,
+        "politica": "Comprar solo si el faltante es claro. Preferir mínimo indispensable.",
+    },
+    "ESTACIONAL": {
+        "peso_regresion": 0.55,
+        "peso_v30d": 0.45,
+        "max_hist": 3.0,
+        "max_v30d": 3.5,
+        "umbral": 0.25,
+        "politica": "Respetar estacionalidad. Aumentar antes de temporada y reducir después.",
+    },
+    "ERRATICO_VARIABLE": {
+        "peso_regresion": 0.35,
+        "peso_v30d": 0.65,
+        "max_hist": 2.0,
+        "max_v30d": 2.2,
+        "umbral": 0.40,
+        "politica": "Comprar con cautela. Priorizar venta reciente sobre pronóstico largo.",
+    },
+    "SIN_HISTORICO": {
+        "peso_regresion": 0.20,
+        "peso_v30d": 0.80,
+        "max_hist": 1.0,
+        "max_v30d": 1.5,
+        "umbral": 0.50,
+        "politica": "Sin historial suficiente. Comprar solo por rotación reciente o necesidad clara.",
+    },
+    "GLOBAL": {
+        "peso_regresion": PESO_REGRESION,
+        "peso_v30d": PESO_V30D,
+        "max_hist": MAX_FACTOR_SOBRE_HISTORICO,
+        "max_v30d": MAX_FACTOR_SOBRE_V30D,
+        "umbral": UMBRAL_COMPRA_DEMANDA,
+        "politica": "Parámetros globales por confianza baja o perfil no determinado.",
+    },
+}
+
 st.set_page_config(page_title="Agente de compras", layout="wide")
 
 
@@ -62,6 +137,10 @@ def next_month(m):
 
 def safe_div(a, b):
     return np.where(np.abs(b) > 1e-9, a / b, 0.0)
+
+
+def clean_numeric_series(s):
+    return pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0)
 
 
 # =========================
@@ -136,7 +215,7 @@ def read_erply(file):
 
     out = pd.DataFrame({
         "Código": df.iloc[:, 1].astype(str).str.strip(),
-        "EAN": df.iloc[:, 2].astype(str).str.strip(),  # ← NUEVO
+        "EAN": df.iloc[:, 2].astype(str).str.strip(),
         "Nombre": df.iloc[:, 3].astype(str).fillna(""),
         "V30D": pd.to_numeric(df.iloc[:, 4], errors="coerce").fillna(0),
         "Stock": pd.to_numeric(df.iloc[:, 6], errors="coerce").fillna(0),
@@ -171,10 +250,7 @@ def prepare_hist(hist):
 def build_monthly_features(hist):
     monthly = (
         hist.groupby(["Código", "Año", "Mes"], as_index=False)
-        .agg({
-            "Ventas": "sum",
-            "Importe": "sum"
-        })
+        .agg({"Ventas": "sum", "Importe": "sum"})
         .sort_values(["Código", "Año", "Mes"])
         .reset_index(drop=True)
     )
@@ -410,16 +486,9 @@ def build_school_demand(hist):
 
 
 # =========================
-# COLUMNAS ABRIL / MAYO 2025
+# COLUMNAS MAYO / JUNIO 2025
 # =========================
-def build_v04_v05(hist):
-    v04 = (
-        hist[(hist["Año"] == 2025) & (hist["Mes"] == 4)]
-        .groupby("Código")["Ventas"]
-        .sum()
-        .rename("V04_2025")
-    )
-
+def build_v05_v06(hist):
     v05 = (
         hist[(hist["Año"] == 2025) & (hist["Mes"] == 5)]
         .groupby("Código")["Ventas"]
@@ -427,7 +496,14 @@ def build_v04_v05(hist):
         .rename("V05_2025")
     )
 
-    return v04, v05
+    v06 = (
+        hist[(hist["Año"] == 2025) & (hist["Mes"] == 6)]
+        .groupby("Código")["Ventas"]
+        .sum()
+        .rename("V06_2025")
+    )
+
+    return v05, v06
 
 
 # =========================
@@ -524,7 +600,220 @@ def build_current_seasonality_for_purchase(seasonality_df):
 
 
 # =========================
-# SEGURIDAD DE REGRESION
+# SEGMENTACION GMM + METRICAS OBSERVABLES
+# =========================
+def slope_last(values):
+    values = np.asarray(values, dtype=float)
+    if len(values) < 2:
+        return 0.0
+    x = np.arange(len(values), dtype=float)
+    try:
+        return float(np.polyfit(x, values, 1)[0])
+    except Exception:
+        return 0.0
+
+
+def build_sku_behavior_features(hist):
+    monthly = (
+        hist.groupby(["Código", "Año", "Mes"], as_index=False)
+        .agg({"Ventas": "sum", "Importe": "sum"})
+    )
+
+    if monthly.empty:
+        return pd.DataFrame(columns=[
+            "Código", "Venta_Total_24M", "Importe_Total_24M", "Promedio_Mensual",
+            "Venta_3M", "Venta_6M", "CV", "Meses_Con_Venta",
+            "Indice_Estacional", "Tendencia_6M"
+        ])
+
+    monthly["Fecha"] = pd.to_datetime(
+        monthly["Año"].astype(str) + "-" + monthly["Mes"].astype(str).str.zfill(2) + "-01"
+    )
+
+    fechas = sorted(monthly["Fecha"].unique())
+    ultimas_fechas = fechas[-24:] if len(fechas) >= 24 else fechas
+    monthly = monthly[monthly["Fecha"].isin(ultimas_fechas)].copy()
+
+    skus = pd.DataFrame({"Código": monthly["Código"].unique()})
+    fechas_df = pd.DataFrame({"Fecha": ultimas_fechas})
+    base = skus.assign(key=1).merge(fechas_df.assign(key=1), on="key").drop(columns="key")
+
+    base["Año"] = pd.to_datetime(base["Fecha"]).dt.year
+    base["Mes"] = pd.to_datetime(base["Fecha"]).dt.month
+
+    full = base.merge(
+        monthly[["Código", "Fecha", "Ventas", "Importe"]],
+        on=["Código", "Fecha"],
+        how="left"
+    )
+    full["Ventas"] = full["Ventas"].fillna(0)
+    full["Importe"] = full["Importe"].fillna(0)
+    full = full.sort_values(["Código", "Fecha"])
+
+    rows = []
+    for codigo, g in full.groupby("Código"):
+        ventas = g["Ventas"].astype(float).values
+        importe = g["Importe"].astype(float).values
+
+        total = float(np.sum(ventas))
+        imp_total = float(np.sum(importe))
+        promedio = float(np.mean(ventas)) if len(ventas) else 0.0
+        std = float(np.std(ventas)) if len(ventas) else 0.0
+        cv = float(std / promedio) if promedio > 0 else 0.0
+        meses_con_venta = int(np.sum(ventas > 0))
+        venta_3m = float(np.sum(ventas[-3:])) if len(ventas) else 0.0
+        venta_6m = float(np.sum(ventas[-6:])) if len(ventas) else 0.0
+        tendencia_6m = slope_last(ventas[-6:]) if len(ventas) >= 2 else 0.0
+
+        by_month = g.groupby("Mes")["Ventas"].sum()
+        promedio_mes = float(by_month.mean()) if len(by_month) else 0.0
+        max_mes = float(by_month.max()) if len(by_month) else 0.0
+        indice_estacional = float(max_mes / promedio_mes) if promedio_mes > 0 else 1.0
+
+        rows.append({
+            "Código": codigo,
+            "Venta_Total_24M": total,
+            "Importe_Total_24M": imp_total,
+            "Promedio_Mensual": promedio,
+            "Venta_3M": venta_3m,
+            "Venta_6M": venta_6m,
+            "CV": cv,
+            "Meses_Con_Venta": meses_con_venta,
+            "Indice_Estacional": indice_estacional,
+            "Tendencia_6M": tendencia_6m,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def classify_behavior(row, p25_prom, p75_prom):
+    promedio = float(row.get("Promedio_Mensual", 0) or 0)
+    cv = float(row.get("CV", 0) or 0)
+    meses = float(row.get("Meses_Con_Venta", 0) or 0)
+    tendencia = float(row.get("Tendencia_6M", 0) or 0)
+    estacional = float(row.get("Indice_Estacional", 1) or 1)
+    venta_6m = float(row.get("Venta_6M", 0) or 0)
+
+    crecimiento_min = max(0.5, promedio * 0.20)
+
+    if promedio <= 0 or meses <= 1:
+        return "SIN_HISTORICO"
+    if meses <= 3 or promedio <= max(0.20, p25_prom * 0.50):
+        return "BAJA_ROTACION_ESPORADICA"
+    if tendencia >= crecimiento_min and venta_6m >= max(3, promedio * 3):
+        return "DEMANDA_EN_CRECIMIENTO"
+    if tendencia <= -crecimiento_min and promedio >= max(0.5, p25_prom):
+        return "DEMANDA_EN_DESCENSO"
+    if promedio >= p75_prom and cv <= 1.10:
+        return "ALTA_ROTACION_ESTABLE"
+    if estacional >= 2.00 and meses >= 4:
+        return "ESTACIONAL"
+    if cv >= 1.80:
+        return "ERRATICO_VARIABLE"
+    if promedio >= p75_prom:
+        return "ALTA_ROTACION_ESTABLE"
+
+    return "ERRATICO_VARIABLE"
+
+
+def build_gmm_segmentation(hist):
+    features = build_sku_behavior_features(hist)
+
+    base_cols = [
+        "Código", "Segmento_GMM", "Cluster_GMM", "Confianza_GMM", "Politica_Compra",
+        "Promedio_Mensual", "CV", "Meses_Con_Venta", "Indice_Estacional", "Tendencia_6M"
+    ]
+
+    if features.empty:
+        return pd.DataFrame(columns=base_cols)
+
+    prom_pos = features.loc[features["Promedio_Mensual"] > 0, "Promedio_Mensual"]
+    p25_prom = float(prom_pos.quantile(0.25)) if not prom_pos.empty else 0.0
+    p75_prom = float(prom_pos.quantile(0.75)) if not prom_pos.empty else 0.0
+
+    features["Segmento_GMM"] = features.apply(
+        lambda r: classify_behavior(r, p25_prom, p75_prom), axis=1
+    )
+
+    features["Cluster_GMM"] = -1
+    features["Confianza_GMM"] = 0.0
+
+    # El GMM se usa como apoyo estadístico. La política final se deriva de métricas observables
+    # para evitar que un cambio de número de cluster altere la lógica de compras.
+    if USAR_SEGMENTACION_GMM and len(features) >= GMM_MIN_SKUS:
+        try:
+            from sklearn.mixture import GaussianMixture
+            from sklearn.preprocessing import StandardScaler
+
+            gmm_cols = [
+                "Venta_Total_24M", "Promedio_Mensual", "Venta_3M", "Venta_6M",
+                "CV", "Meses_Con_Venta", "Indice_Estacional", "Tendencia_6M"
+            ]
+
+            X = features[gmm_cols].copy()
+            X["Venta_Total_24M"] = np.log1p(X["Venta_Total_24M"])
+            X["Promedio_Mensual"] = np.log1p(X["Promedio_Mensual"])
+            X["Venta_3M"] = np.log1p(X["Venta_3M"])
+            X["Venta_6M"] = np.log1p(X["Venta_6M"])
+            X["CV"] = X["CV"].clip(0, 10)
+            X["Indice_Estacional"] = X["Indice_Estacional"].clip(0, 10)
+            X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X.values)
+
+            n_components = min(GMM_COMPONENTES, max(2, len(features) // 10))
+            gmm = GaussianMixture(
+                n_components=n_components,
+                covariance_type="full",
+                random_state=GMM_RANDOM_STATE,
+                n_init=5,
+                reg_covar=1e-6,
+            )
+            clusters = gmm.fit_predict(X_scaled)
+            probs = gmm.predict_proba(X_scaled)
+
+            features["Cluster_GMM"] = clusters.astype(int)
+            features["Confianza_GMM"] = probs.max(axis=1)
+        except Exception:
+            features["Cluster_GMM"] = -1
+            features["Confianza_GMM"] = 0.0
+
+    def politica(seg):
+        return PARAMETROS_PERFIL.get(seg, PARAMETROS_PERFIL["GLOBAL"])["politica"]
+
+    features["Politica_Compra"] = features["Segmento_GMM"].apply(politica)
+
+    return features[base_cols]
+
+
+def apply_dynamic_profile_params(final):
+    final = final.copy()
+
+    final["Segmento_GMM"] = final["Segmento_GMM"].fillna("SIN_HISTORICO")
+    final["Confianza_GMM"] = clean_numeric_series(final["Confianza_GMM"])
+
+    def get_param(seg, key):
+        return PARAMETROS_PERFIL.get(seg, PARAMETROS_PERFIL["GLOBAL"])[key]
+
+    final["Peso_Regresion_Dyn"] = final["Segmento_GMM"].apply(lambda x: get_param(x, "peso_regresion"))
+    final["Peso_V30D_Dyn"] = final["Segmento_GMM"].apply(lambda x: get_param(x, "peso_v30d"))
+    final["Max_Factor_Hist_Dyn"] = final["Segmento_GMM"].apply(lambda x: get_param(x, "max_hist"))
+    final["Max_Factor_V30D_Dyn"] = final["Segmento_GMM"].apply(lambda x: get_param(x, "max_v30d"))
+    final["Umbral_Compra_Demanda_Dyn"] = final["Segmento_GMM"].apply(lambda x: get_param(x, "umbral"))
+    final["Politica_Compra"] = final["Politica_Compra"].fillna(PARAMETROS_PERFIL["GLOBAL"]["politica"])
+
+    poco_hist = final["Meses_Historial"].fillna(0) < MIN_MESES_PARA_REGRESION
+    final.loc[poco_hist, "Peso_Regresion_Dyn"] = np.minimum(final.loc[poco_hist, "Peso_Regresion_Dyn"], 0.20)
+    final.loc[poco_hist, "Peso_V30D_Dyn"] = 1.0 - final.loc[poco_hist, "Peso_Regresion_Dyn"]
+    final.loc[poco_hist, "Max_Factor_Hist_Dyn"] = np.minimum(final.loc[poco_hist, "Max_Factor_Hist_Dyn"], 1.5)
+    final.loc[poco_hist, "Umbral_Compra_Demanda_Dyn"] = np.maximum(final.loc[poco_hist, "Umbral_Compra_Demanda_Dyn"], 0.40)
+
+    return final
+
+
+# =========================
+# SEGURIDAD DE REGRESION DINAMICA
 # =========================
 def apply_regression_safety(final):
     final = final.copy()
@@ -538,15 +827,18 @@ def apply_regression_safety(final):
         final["Demanda_Mensual_Historica"]
     )
 
+    max_hist = final.get("Max_Factor_Hist_Dyn", MAX_FACTOR_SOBRE_HISTORICO)
+    max_v30d = final.get("Max_Factor_V30D_Dyn", MAX_FACTOR_SOBRE_V30D)
+
     limite_hist = np.where(
         final["Demanda_Mensual_Historica"] > 0,
-        final["Demanda_Mensual_Historica"] * MAX_FACTOR_SOBRE_HISTORICO,
+        final["Demanda_Mensual_Historica"] * max_hist,
         np.nan
     )
 
     limite_v30d = np.where(
         final["V30D"] > 0,
-        final["V30D"] * MAX_FACTOR_SOBRE_V30D,
+        final["V30D"] * max_v30d,
         np.nan
     )
 
@@ -573,7 +865,7 @@ def apply_regression_safety(final):
 def build_final_table(vs, hist):
     cost = build_cost(hist)
     school = build_school_demand(hist)
-    v04, v05 = build_v04_v05(hist)
+    v05, v06 = build_v05_v06(hist)
 
     monthly, train = build_monthly_features(hist)
     model, feature_cols = train_global_regression(train)
@@ -582,15 +874,18 @@ def build_final_table(vs, hist):
     seasonality_full = build_seasonality(hist)
     seasonality_buy = build_current_seasonality_for_purchase(seasonality_full)
 
+    segmentation = build_gmm_segmentation(hist)
+
     final = vs.merge(school, on="Código", how="left")
     final = final.merge(cost, on="Código", how="left")
-    final = final.merge(v04, on="Código", how="left")
     final = final.merge(v05, on="Código", how="left")
+    final = final.merge(v06, on="Código", how="left")
     final = final.merge(pred_reg, on="Código", how="left")
     final = final.merge(seasonality_buy, on="Código", how="left")
+    final = final.merge(segmentation, on="Código", how="left")
 
-    final["V04_2025"] = final["V04_2025"].fillna(0)
     final["V05_2025"] = final["V05_2025"].fillna(0)
+    final["V06_2025"] = final["V06_2025"].fillna(0)
     final["Tipo"] = final["Tipo"].fillna("SIN_HISTORICO")
 
     final = fill_missing_costs_with_global_average(final, hist)
@@ -605,11 +900,12 @@ def build_final_table(vs, hist):
         final["Factor_Estacional_Compra"]
     )
 
+    final = apply_dynamic_profile_params(final)
     final = apply_regression_safety(final)
 
     final["Demanda_Base_Modelo"] = (
-        PESO_REGRESION * final["Pred_Regresion_Usable"] +
-        PESO_V30D * final["V30D"]
+        final["Peso_Regresion_Dyn"] * final["Pred_Regresion_Usable"] +
+        final["Peso_V30D_Dyn"] * final["V30D"]
     ).clip(lower=0)
 
     if USAR_ESTACIONALIDAD:
@@ -657,7 +953,7 @@ def build_final_table(vs, hist):
 
     final = final[
         (final["Compra"] > 0) &
-        (final["Relacion_Compra_Demanda"] >= UMBRAL_COMPRA_DEMANDA)
+        (final["Relacion_Compra_Demanda"] >= final["Umbral_Compra_Demanda_Dyn"])
     ].copy()
 
     final["Costo"] = final["Costo"].round(2)
@@ -681,27 +977,58 @@ def build_final_table(vs, hist):
 
     tabla = final[[
         "Código",
-        "EAN",        # ← NUEVO
+        "EAN",
         "Nombre",
         "Compra",
         "Stock",
         "Demanda30",
         "Porcentaje_Compra_Demanda",
         "V30D",
-        "V04_2025",
         "V05_2025",
+        "V06_2025",
         "Costo",
         "Importe",
         "Nivel",
-        "Tipo"
+        "Tipo",
+        "Segmento_GMM",
+        "Cluster_GMM",
+        "Confianza_GMM",
+        "Promedio_Mensual",
+        "CV",
+        "Meses_Con_Venta",
+        "Indice_Estacional",
+        "Tendencia_6M",
+        "Peso_Regresion_Dyn",
+        "Peso_V30D_Dyn",
+        "Umbral_Compra_Demanda_Dyn",
+        "Politica_Compra",
     ]].copy()
 
     tabla["Costo"] = tabla["Costo"].round(2)
     tabla["Importe"] = tabla["Importe"].round(2)
+    tabla["Confianza_GMM"] = tabla["Confianza_GMM"].round(3)
+    tabla["Promedio_Mensual"] = tabla["Promedio_Mensual"].round(2)
+    tabla["CV"] = tabla["CV"].round(2)
+    tabla["Indice_Estacional"] = tabla["Indice_Estacional"].round(2)
+    tabla["Tendencia_6M"] = tabla["Tendencia_6M"].round(2)
+    tabla["Peso_Regresion_Dyn"] = tabla["Peso_Regresion_Dyn"].round(2)
+    tabla["Peso_V30D_Dyn"] = tabla["Peso_V30D_Dyn"].round(2)
+    tabla["Umbral_Compra_Demanda_Dyn"] = tabla["Umbral_Compra_Demanda_Dyn"].round(2)
 
     tabla = tabla.sort_values("Importe", ascending=False).reset_index(drop=True)
 
-    return tabla
+    resumen = (
+        tabla.groupby("Segmento_GMM", as_index=False)
+        .agg(
+            SKUs=("Código", "count"),
+            Compra_Total=("Compra", "sum"),
+            Importe_Total=("Importe", "sum"),
+            Promedio_Demanda30=("Demanda30", "mean"),
+        )
+        .sort_values("Importe_Total", ascending=False)
+    )
+
+    return tabla, resumen
 
 
 # =========================
@@ -713,6 +1040,7 @@ hist_file = st.file_uploader("Histórico", type=["xlsx"])
 erply_file = st.file_uploader("Erply", type=["xls", "xlsx", "html"])
 
 if hist_file is None or erply_file is None:
+    st.info("Sube el Histórico 24M y el archivo Erply para calcular la compra.")
     st.stop()
 
 try:
@@ -720,12 +1048,16 @@ try:
     vs = read_erply(erply_file)
     hist = prepare_hist(hist)
 
-    tabla = build_final_table(vs, hist)
+    tabla, resumen = build_final_table(vs, hist)
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("SKUs", len(tabla))
     m2.metric("SKUs Compra", int((tabla["Compra"] > 0).sum()))
     m3.metric("Importe Total", f"${tabla['Importe'].fillna(0).sum():,.2f}")
+    m4.metric("Segmentos", int(tabla["Segmento_GMM"].nunique()) if not tabla.empty else 0)
+
+    st.markdown("### Resumen por segmento")
+    st.dataframe(resumen, use_container_width=True, height=250)
 
     st.markdown("### Tabla de compra")
     st.dataframe(tabla, use_container_width=True, height=650)
@@ -742,7 +1074,7 @@ try:
     st.download_button(
         "Descargar CSV",
         tabla_descarga.to_csv(index=False).encode("utf-8-sig"),
-        "compra_v9_1_filtro_25.csv"
+        "compra_v9_2_gmm_segmentacion.csv"
     )
 
 except Exception as e:
