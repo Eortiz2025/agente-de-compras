@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-APP_VERSION = "v9.2 RIDGE + GMM SEGMENTACION"
+APP_VERSION = "v9.2.1 RIDGE + GMM SEGMENTACION (ajustado)"
 
 MIN_ROTACION_V30D = 3
 COMPRA_MINIMA_UNIDAD = 1
@@ -41,7 +41,11 @@ USAR_SEGMENTACION_GMM = True
 GMM_COMPONENTES = 6
 GMM_RANDOM_STATE = 42
 GMM_MIN_SKUS = 50
-GMM_CONFIANZA_MINIMA = 0.80
+GMM_CONFIANZA_MINIMA = 0.80  # usado para marcar "Revisar_GMM" en la tabla final
+
+# Meses mínimos con venta para confiar en el índice estacional
+# (con menos meses, el índice max/promedio se dispara por azar y genera falsos "ESTACIONAL")
+MIN_MESES_PARA_ESTACIONAL = 8
 
 # Parámetros dinámicos por perfil
 PARAMETROS_PERFIL = {
@@ -706,7 +710,10 @@ def classify_behavior(row, p25_prom, p75_prom):
         return "DEMANDA_EN_DESCENSO"
     if promedio >= p75_prom and cv <= 1.10:
         return "ALTA_ROTACION_ESTABLE"
-    if estacional >= 2.00 and meses >= 4:
+    # AJUSTE: antes pedía meses >= 4, lo cual dejaba pasar productos esporádicos
+    # cuyo índice estacional se dispara por azar al tener pocos datos.
+    # Ahora se exige un mínimo de MIN_MESES_PARA_ESTACIONAL (8) para confiar en la señal.
+    if estacional >= 2.00 and meses >= MIN_MESES_PARA_ESTACIONAL:
         return "ESTACIONAL"
     if cv >= 1.80:
         return "ERRATICO_VARIABLE"
@@ -717,6 +724,13 @@ def classify_behavior(row, p25_prom, p75_prom):
 
 
 def build_gmm_segmentation(hist):
+    """
+    Devuelve (features, gmm_error).
+    El GMM (Cluster_GMM / Confianza_GMM) se calcula como apoyo estadístico/diagnóstico.
+    La política de compra real sale de Segmento_GMM, que es una clasificación por reglas
+    (basada en percentiles del catálogo completo) para evitar que un cambio de cluster
+    de una corrida a otra altere la lógica de compras.
+    """
     features = build_sku_behavior_features(hist)
 
     base_cols = [
@@ -725,7 +739,7 @@ def build_gmm_segmentation(hist):
     ]
 
     if features.empty:
-        return pd.DataFrame(columns=base_cols)
+        return pd.DataFrame(columns=base_cols), None
 
     prom_pos = features.loc[features["Promedio_Mensual"] > 0, "Promedio_Mensual"]
     p25_prom = float(prom_pos.quantile(0.25)) if not prom_pos.empty else 0.0
@@ -738,8 +752,8 @@ def build_gmm_segmentation(hist):
     features["Cluster_GMM"] = -1
     features["Confianza_GMM"] = 0.0
 
-    # El GMM se usa como apoyo estadístico. La política final se deriva de métricas observables
-    # para evitar que un cambio de número de cluster altere la lógica de compras.
+    gmm_error = None
+
     if USAR_SEGMENTACION_GMM and len(features) >= GMM_MIN_SKUS:
         try:
             from sklearn.mixture import GaussianMixture
@@ -775,7 +789,10 @@ def build_gmm_segmentation(hist):
 
             features["Cluster_GMM"] = clusters.astype(int)
             features["Confianza_GMM"] = probs.max(axis=1)
-        except Exception:
+        except Exception as e:
+            # AJUSTE: antes el error se tragaba en silencio. Ahora se devuelve
+            # para que la UI muestre un aviso visible al usuario.
+            gmm_error = str(e)
             features["Cluster_GMM"] = -1
             features["Confianza_GMM"] = 0.0
 
@@ -784,7 +801,7 @@ def build_gmm_segmentation(hist):
 
     features["Politica_Compra"] = features["Segmento_GMM"].apply(politica)
 
-    return features[base_cols]
+    return features[base_cols], gmm_error
 
 
 def apply_dynamic_profile_params(final):
@@ -808,6 +825,14 @@ def apply_dynamic_profile_params(final):
     final.loc[poco_hist, "Peso_V30D_Dyn"] = 1.0 - final.loc[poco_hist, "Peso_Regresion_Dyn"]
     final.loc[poco_hist, "Max_Factor_Hist_Dyn"] = np.minimum(final.loc[poco_hist, "Max_Factor_Hist_Dyn"], 1.5)
     final.loc[poco_hist, "Umbral_Compra_Demanda_Dyn"] = np.maximum(final.loc[poco_hist, "Umbral_Compra_Demanda_Dyn"], 0.40)
+
+    # AJUSTE: bandera informativa para revisión manual cuando el GMM estadístico
+    # tuvo baja confianza en su agrupación. No cambia la compra, solo marca para revisar.
+    final["Revisar_GMM"] = np.where(
+        (final["Cluster_GMM"].fillna(-1) >= 0) & (final["Confianza_GMM"] < GMM_CONFIANZA_MINIMA),
+        "SI",
+        "NO"
+    )
 
     return final
 
@@ -874,7 +899,7 @@ def build_final_table(vs, hist):
     seasonality_full = build_seasonality(hist)
     seasonality_buy = build_current_seasonality_for_purchase(seasonality_full)
 
-    segmentation = build_gmm_segmentation(hist)
+    segmentation, gmm_error = build_gmm_segmentation(hist)
 
     final = vs.merge(school, on="Código", how="left")
     final = final.merge(cost, on="Código", how="left")
@@ -993,6 +1018,7 @@ def build_final_table(vs, hist):
         "Segmento_GMM",
         "Cluster_GMM",
         "Confianza_GMM",
+        "Revisar_GMM",
         "Promedio_Mensual",
         "CV",
         "Meses_Con_Venta",
@@ -1028,7 +1054,7 @@ def build_final_table(vs, hist):
         .sort_values("Importe_Total", ascending=False)
     )
 
-    return tabla, resumen
+    return tabla, resumen, gmm_error
 
 
 # =========================
@@ -1048,7 +1074,14 @@ try:
     vs = read_erply(erply_file)
     hist = prepare_hist(hist)
 
-    tabla, resumen = build_final_table(vs, hist)
+    tabla, resumen, gmm_error = build_final_table(vs, hist)
+
+    if gmm_error:
+        st.warning(
+            "El cálculo estadístico del GMM (Cluster_GMM/Confianza_GMM) falló y se "
+            f"omitió: {gmm_error}. La clasificación por reglas (Segmento_GMM), que es la "
+            "que define los parámetros de compra, no se ve afectada."
+        )
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("SKUs", len(tabla))
@@ -1074,7 +1107,7 @@ try:
     st.download_button(
         "Descargar CSV",
         tabla_descarga.to_csv(index=False).encode("utf-8-sig"),
-        "compra_v9_2_gmm_segmentacion.csv"
+        "compra_v9_2_1_gmm_segmentacion.csv"
     )
 
 except Exception as e:
