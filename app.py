@@ -1000,6 +1000,10 @@ def build_final_table(vs, hist):
 
     final["Nivel"] = final["Cobertura"].apply(nivel)
 
+    # Columnas finales: solo las solicitadas (ver info_de_compra.txt).
+    # El resto de columnas (Tipo, Cluster_GMM, Confianza_GMM, Revisar_GMM, métricas de
+    # diagnóstico, etc.) se sigue calculando internamente para el modelo, pero ya no
+    # se muestra ni se exporta.
     tabla = final[[
         "Código",
         "EAN",
@@ -1007,54 +1011,20 @@ def build_final_table(vs, hist):
         "Compra",
         "Stock",
         "Demanda30",
-        "Porcentaje_Compra_Demanda",
         "V30D",
         "V05_2025",
         "V06_2025",
         "Costo",
         "Importe",
-        "Nivel",
-        "Tipo",
         "Segmento_GMM",
-        "Cluster_GMM",
-        "Confianza_GMM",
-        "Revisar_GMM",
-        "Promedio_Mensual",
-        "CV",
-        "Meses_Con_Venta",
-        "Indice_Estacional",
-        "Tendencia_6M",
-        "Peso_Regresion_Dyn",
-        "Peso_V30D_Dyn",
-        "Umbral_Compra_Demanda_Dyn",
-        "Politica_Compra",
     ]].copy()
 
     tabla["Costo"] = tabla["Costo"].round(2)
     tabla["Importe"] = tabla["Importe"].round(2)
-    tabla["Confianza_GMM"] = tabla["Confianza_GMM"].round(3)
-    tabla["Promedio_Mensual"] = tabla["Promedio_Mensual"].round(2)
-    tabla["CV"] = tabla["CV"].round(2)
-    tabla["Indice_Estacional"] = tabla["Indice_Estacional"].round(2)
-    tabla["Tendencia_6M"] = tabla["Tendencia_6M"].round(2)
-    tabla["Peso_Regresion_Dyn"] = tabla["Peso_Regresion_Dyn"].round(2)
-    tabla["Peso_V30D_Dyn"] = tabla["Peso_V30D_Dyn"].round(2)
-    tabla["Umbral_Compra_Demanda_Dyn"] = tabla["Umbral_Compra_Demanda_Dyn"].round(2)
 
     tabla = tabla.sort_values("Importe", ascending=False).reset_index(drop=True)
 
-    resumen = (
-        tabla.groupby("Segmento_GMM", as_index=False)
-        .agg(
-            SKUs=("Código", "count"),
-            Compra_Total=("Compra", "sum"),
-            Importe_Total=("Importe", "sum"),
-            Promedio_Demanda30=("Demanda30", "mean"),
-        )
-        .sort_values("Importe_Total", ascending=False)
-    )
-
-    return tabla, resumen, gmm_error
+    return tabla, gmm_error
 
 
 # =========================
@@ -1074,7 +1044,7 @@ try:
     vs = read_erply(erply_file)
     hist = prepare_hist(hist)
 
-    tabla, resumen, gmm_error = build_final_table(vs, hist)
+    tabla, gmm_error = build_final_table(vs, hist)
 
     if gmm_error:
         st.warning(
@@ -1083,14 +1053,10 @@ try:
             "que define los parámetros de compra, no se ve afectada."
         )
 
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3 = st.columns(3)
     m1.metric("SKUs", len(tabla))
     m2.metric("SKUs Compra", int((tabla["Compra"] > 0).sum()))
     m3.metric("Importe Total", f"${tabla['Importe'].fillna(0).sum():,.2f}")
-    m4.metric("Segmentos", int(tabla["Segmento_GMM"].nunique()) if not tabla.empty else 0)
-
-    st.markdown("### Resumen por segmento")
-    st.dataframe(resumen, use_container_width=True, height=250)
 
     st.markdown("### Tabla de compra")
     st.dataframe(tabla, use_container_width=True, height=650)
