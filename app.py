@@ -493,21 +493,28 @@ def build_school_demand(hist):
 # COLUMNAS MAYO / JUNIO 2025
 # =========================
 def build_v05_v06(hist):
-    v05 = (
-        hist[(hist["Año"] == 2025) & (hist["Mes"] == 5)]
+    v07 = (
+        hist[(hist["Año"] == 2025) & (hist["Mes"] == 7)]
         .groupby("Código")["Ventas"]
         .sum()
-        .rename("V05_2025")
+        .rename("V07_2025")
     )
 
-    v06 = (
-        hist[(hist["Año"] == 2025) & (hist["Mes"] == 6)]
+    v08 = (
+        hist[(hist["Año"] == 2025) & (hist["Mes"] == 8)]
         .groupby("Código")["Ventas"]
         .sum()
-        .rename("V06_2025")
+        .rename("V08_2025")
     )
 
-    return v05, v06
+    v09 = (
+        hist[(hist["Año"] == 2025) & (hist["Mes"] == 9)]
+        .groupby("Código")["Ventas"]
+        .sum()
+        .rename("V09_2025")
+    )
+
+    return v07, v08, v09
 
 
 # =========================
@@ -890,7 +897,7 @@ def apply_regression_safety(final):
 def build_final_table(vs, hist):
     cost = build_cost(hist)
     school = build_school_demand(hist)
-    v05, v06 = build_v05_v06(hist)
+    v07, v08, v09 = build_v05_v06(hist)
 
     monthly, train = build_monthly_features(hist)
     model, feature_cols = train_global_regression(train)
@@ -903,14 +910,16 @@ def build_final_table(vs, hist):
 
     final = vs.merge(school, on="Código", how="left")
     final = final.merge(cost, on="Código", how="left")
-    final = final.merge(v05, on="Código", how="left")
-    final = final.merge(v06, on="Código", how="left")
+    final = final.merge(v07, on="Código", how="left")
+    final = final.merge(v08, on="Código", how="left")
+    final = final.merge(v09, on="Código", how="left")
     final = final.merge(pred_reg, on="Código", how="left")
     final = final.merge(seasonality_buy, on="Código", how="left")
     final = final.merge(segmentation, on="Código", how="left")
 
-    final["V05_2025"] = final["V05_2025"].fillna(0)
-    final["V06_2025"] = final["V06_2025"].fillna(0)
+    final["V07_2025"] = final["V07_2025"].fillna(0)
+    final["V08_2025"] = final["V08_2025"].fillna(0)
+    final["V09_2025"] = final["V09_2025"].fillna(0)
     final["Tipo"] = final["Tipo"].fillna("SIN_HISTORICO")
 
     final = fill_missing_costs_with_global_average(final, hist)
@@ -1012,8 +1021,10 @@ def build_final_table(vs, hist):
         "Stock",
         "Demanda30",
         "V30D",
-        "V05_2025",
-        "V06_2025",
+        "V07_2025",
+        "V08_2025",
+        "V09_2025",
+        
         "Costo",
         "Importe",
         "Segmento_GMM",
